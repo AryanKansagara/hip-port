@@ -276,7 +276,7 @@ function Python({ project, r }: TabProps) {
         <thead><tr><th>Package</th><th>Spec</th><th>Status</th><th>What to do</th><th>Checked</th></tr></thead>
         <tbody>{d.deps.map((x, i) => (
           <tr key={i}>
-            <td><b className="mono">{x.name}</b> <span className="muted tiny">line {x.line}{x.source === 'conda' ? ' · conda' : ''}</span></td>
+            <td className="nowrap"><b className="mono">{x.name}</b> <span className="muted tiny">line {x.line}{x.source === 'conda' ? ' · conda' : ''}</span></td>
             <td className="mono small">{x.spec || '—'}{x.cudaLocal && <span className="pill bad">+{x.cudaLocal}</span>}</td>
             <td><span className={`pill ${DEP_TONE[x.status]}`}>{STATUS_LABEL[x.status]}</span></td>
             <td className="small"><div>{x.action}</div><div className="muted">{x.note}</div></td>
@@ -346,11 +346,11 @@ function History({ project, r, update }: TabProps) {
 }
 
 function ProgressChart({ snaps }: { snaps: ScanSnapshot[] }) {
-  const W = 720, H = 220, P = { l: 36, r: 40, t: 14, b: 34 }
+  const W = 1000, H = 260, P = { l: 20, r: 40, t: 24, b: 34 }
   const iw = W - P.l - P.r, ih = H - P.t - P.b
   const maxItems = Math.max(1, ...snaps.map(s => SEVERITIES.reduce((n, k) => n + s.counts[k], 0)))
-  const x = (i: number) => P.l + (snaps.length === 1 ? iw / 2 : (i * iw) / (snaps.length - 1))
   const bw = Math.min(46, iw / snaps.length / 1.8)
+  const x = (i: number) => P.l + bw + (snaps.length === 1 ? (iw - 2 * bw) / 2 : (i * (iw - 2 * bw)) / (snaps.length - 1))
   const line = snaps.map((s, i) => `${i ? 'L' : 'M'}${x(i)},${P.t + ih - (s.score / 100) * ih}`).join('')
   return (
     <div className="chart-wrap">

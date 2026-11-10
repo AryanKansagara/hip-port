@@ -65,7 +65,7 @@ function HeroDemo() {
               <pre className="ed-hl" aria-hidden="true">{L.map((segs, i) => <div key={i} className={`cl${hz.has(i + 1) && i + 1 <= beam ? ` hz ${worst(hz.get(i + 1)!)}` : ''}${i + 1 === beam ? ' beam' : ''}${pick === i + 1 ? ' picked' : ''}`}><Segs segs={segs} />{'\n'}</div>)}</pre>
               <textarea
                 className="ed-input" spellCheck={false} wrap="off" aria-label="CUDA source (editable)"
-                value={src} style={{ height: `${nL * 1.6 + 1.2}em`, width: `max(100%, ${maxLen + 3}ch)` }}
+                value={src} style={{ height: `${nL * 20 + 16}px`, width: `max(100%, ${maxLen + 3}ch)` }}
                 onChange={e => { setSrc(e.target.value); setBeam(999) }}
               />
             </div>

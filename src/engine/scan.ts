@@ -151,7 +151,7 @@ const WEIGHT: Record<Severity, number> = { critical: 12, high: 5, medium: 1.5, l
 /** 0-100. Open items cost points by severity; resolved items cost nothing. */
 export function readiness(items: WorkItem[], resolved: (key: string) => boolean = () => false): number {
   const cost = items.filter(i => !resolved(i.key)).reduce((s, i) => s + WEIGHT[i.severity], 0)
-  return Math.max(0, Math.round(100 * Math.exp(-cost / 60)))
+  return Math.max(0, Math.round(100 * Math.exp(-cost / 100)))
 }
 
 // ---------- Readiness checklist for a PyTorch stack ----------

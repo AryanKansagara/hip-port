@@ -77,7 +77,7 @@ h3 { font-size: 1.12rem; font-weight: 700; }
 p { margin: 0 0 1em; }
 a { color: var(--accent-ink); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 3px; }
-code, kbd, .mono { font-family: var(--font-mono); }
+code, kbd, pre, textarea.mono, .mono, .diff, .editor, .ed-hl { font-family: var(--font-mono); font-variant-ligatures: none; font-feature-settings: 'liga' 0, 'calt' 0; }
 code { font-size: .86em; background: var(--accent-soft); border-radius: var(--r); padding: .05em .35em; color: var(--ink); }
 kbd { font-size: 12px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: var(--r); padding: 0 6px; background: var(--surface); color: var(--ink-2); }
 hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
@@ -270,17 +270,17 @@ dialog.modal::backdrop { background: #000a; backdrop-filter: blur(3px); }
 .pane-label { position: sticky; top: 0; z-index: 2; background: inherit; font: 700 11px var(--font-display); letter-spacing: .14em; text-transform: uppercase; color: var(--ink); padding: 8px 12px; border-bottom: 1px solid var(--line-2); background: var(--code-bg); }
 .pane.out .pane-label { color: var(--accent); }
 .pane-label small { font: 500 11px var(--font-sans); letter-spacing: 0; text-transform: none; color: var(--ink-3); margin-left: 6px; }
-.editor { display: grid; grid-template-columns: 44px 1fr; font: 12.5px/1.6 var(--font-mono); }
-.ed-gutter { padding: .6em 0; border-right: 1px solid var(--line-2); user-select: none; }
-.gl { display: flex; align-items: center; justify-content: flex-end; gap: 4px; height: 1.6em; padding-right: 6px; color: var(--ink-3); font-size: 11px; }
+.editor { display: grid; grid-template-columns: 44px 1fr; font: 12.5px/20px var(--font-mono); }
+.ed-gutter { padding: 8px 0; border-right: 1px solid var(--line-2); user-select: none; }
+.gl { display: flex; align-items: center; justify-content: flex-end; gap: 4px; height: 20px; padding-right: 6px; color: var(--ink-3); font-size: 11px; }
 .gl.on i { color: var(--ink); }
 .ed-body { position: relative; overflow: hidden; }
-.ed-hl, .ed-input { margin: 0; padding: .6em 12px; font: inherit; white-space: pre; tab-size: 2; }
+.ed-hl, .ed-input { margin: 0; padding: 8px 12px; font: inherit; line-height: 20px; white-space: pre; tab-size: 2; }
 .ed-hl { pointer-events: none; color: var(--ink-2); }
 .ed-input { position: absolute; inset: 0; border: 0; background: transparent; color: transparent; caret-color: var(--accent); resize: none; overflow: hidden; outline: none; box-shadow: none !important; min-height: 0; border-radius: 0; }
 .ed-input:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
-.ed-hl.static { padding: .6em 12px .6em 0; font: 12.5px/1.6 var(--font-mono); }
-.cl { position: relative; height: 1.6em; transition: background .3s var(--ease), opacity .3s; }
+.ed-hl.static { padding: 8px 12px 8px 0; font: 12.5px/20px var(--font-mono); }
+.cl { position: relative; height: 20px; transition: background .3s var(--ease), opacity .3s; }
 .cl.hz.critical { background: color-mix(in srgb, var(--crit) 14%, transparent); box-shadow: inset 2px 0 var(--crit); }
 .cl.hz.high { background: color-mix(in srgb, var(--high) 12%, transparent); box-shadow: inset 2px 0 var(--high); }
 .cl.hz.medium { background: color-mix(in srgb, var(--med) 10%, transparent); box-shadow: inset 2px 0 var(--med); }
@@ -393,7 +393,9 @@ dialog.modal::backdrop { background: #000a; backdrop-filter: blur(3px); }
 .checklist li.todo > i { border-color: var(--high); }
 .checklist li.info > i { border-color: var(--accent); border-style: dotted; }
 .checklist p { margin: 2px 0 6px; }
-.cmd { display: flex; align-items: center; gap: 6px; background: var(--code-bg); border: 1px solid var(--line); padding: 4px 4px 4px 10px; }
+.checklist li > div { min-width: 0; }
+.data td.nowrap { white-space: nowrap; }
+.cmd { min-width: 0; display: flex; align-items: center; gap: 6px; background: var(--code-bg); border: 1px solid var(--line); padding: 4px 4px 4px 10px; }
 .cmd code { flex: 1; background: none; padding: 0; font-size: 12px; overflow-x: auto; white-space: nowrap; }
 
 /* Files + diff */
@@ -532,3 +534,6 @@ dialog.modal::backdrop { background: #000a; backdrop-filter: blur(3px); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Code never uses ligatures: != and >>= must read exactly as typed. */
+code, pre, kbd, .mono, .editor, .ed-hl, .ed-hl.static, .ed-input, .diff, .cell, .cmd code { font-variant-ligatures: none; font-feature-settings: 'liga' 0, 'calt' 0; }

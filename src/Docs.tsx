@@ -78,7 +78,7 @@ export default function Docs() {
           <li>Mapping table follows hipify-perl and the HIP API reference for ROCm 6.4 / 7.0 (checked November 2026). hipBLAS 2.x semantics are assumed for <code>GemmEx</code> compute types.</li>
           <li>Target facts (wave size, FP8 format, support tier) from the ROCm 7.0 compatibility matrix and LLVM AMDGPU usage docs, November 2026.</li>
           <li>Python package statuses checked October 2026. vLLM, bitsandbytes and flash-attention move fast on ROCm; re-check before a big migration.</li>
-          <li>Readiness score: 100 &times; e<sup>&minus;cost/60</sup>, where each open item costs 12 (critical), 5 (high), 1.5 (medium) or 0.4 (low). Resolved items cost nothing.</li>
+          <li>Readiness score: 100 &times; e<sup>&minus;cost/100</sup>, where each open item costs 12 (critical), 5 (high), 1.5 (medium) or 0.4 (low). Resolved items cost nothing.</li>
         </ul>
       </div>
     </section>
