@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en" data-default-mode="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HIP Port: port CUDA to HIP and ROCm in your browser</title>
+    <meta name="description" content="Translate CUDA to HIP with the hipify mapping table, find warp-size-64 hazards, inline PTX and texture references, map cuBLAS/cuDNN/CUB to ROCm libraries, and check your PyTorch stack for ROCm. Runs in your browser." />
+    <meta name="theme-color" content="#000000" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='3' fill='%23000'/><path d='M22 2h8v8z' fill='%2300c2de'/><text x='15' y='22' font-family='Arial,sans-serif' font-size='14' font-weight='900' text-anchor='middle' fill='white'>HP</text></svg>" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Saira:wght@500;600;700;800&family=Open+Sans:wght@400;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+    <script>
+      (function () {
+        var q = new URLSearchParams(location.search).get('mode')
+        var m = q === 'light' || q === 'dark' ? q : localStorage.getItem('themeMode')
+        document.documentElement.dataset.themeMode = m === 'light' || m === 'dark' ? m : document.documentElement.dataset.defaultMode
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

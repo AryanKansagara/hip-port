@@ -18,6 +18,7 @@ export interface Coverage { total: number; converted: number; partial: number; u
 export interface FileResult {
   path: string
   outPath: string
+  source: string
   translated: string
   hazards: Hazard[]
   uses: Use[]
@@ -87,7 +88,7 @@ export function scan(files: SourceFile[], depsFile: SourceFile | null, opts: Sca
     const hazards = detect(f.text, m, t)
     const plain = !tr.uses.length && !hazards.length && !/__global__|__device__|__shared__/.test(m.code)
     return {
-      path: f.path, outPath: plain ? f.path : hipPath(f.path), translated: plain ? f.text : tr.out, hazards, uses: tr.uses,
+      path: f.path, outPath: plain ? f.path : hipPath(f.path), source: f.text, translated: plain ? f.text : tr.out, hazards, uses: tr.uses,
       launches: tr.launches, addedInclude: plain ? false : tr.addedInclude, lines: f.text.split('\n').length, coverage: coverageOf(tr.uses), plain,
     }
   })
