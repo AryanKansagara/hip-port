@@ -15,7 +15,7 @@ export function highlight(src: string): Seg[][] {
       if (p) lines[lines.length - 1].push([k, p])
     })
   }
-  const re = /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|("(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?)|(^[ \t]*#[ \t]*\w+)|([A-Za-z_]\w*)|(\b\d[\w.]*\b)|(\s+|.)/gm
+  const re = /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|(?![\s\S])))|("(?:\\.|[^"\\\n])*"?|'(?:\\.|[^'\\\n])*'?)|(^[ \t]*#[ \t]*\w+)|([A-Za-z_]\w*)|(\b\d[\w.]*\b)|(\s+|.)/gm
   for (const m of src.matchAll(re)) {
     if (m[1]) push('c', m[1])
     else if (m[2]) push('s', m[2])

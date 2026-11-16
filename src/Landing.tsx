@@ -168,7 +168,7 @@ export function Landing() {
         <article className="feature">
           <div className="f-num">01</div>
           <h3>Translate</h3>
-          <p>A comment- and string-aware translator over {TABLE_SIZE}+ explicit mappings plus library families: runtime and driver API, cuBLAS, cuFFT, cuRAND, cuSPARSE, cuSOLVER, cuDNN to MIOpen, CUB to hipCUB, Thrust, NCCL, NVTX. Optional hipLaunchKernelGGL launches. Coverage report per file.</p>
+          <p>A comment- and string-aware translator over {TABLE_SIZE.toLocaleString('en-US')} entries generated from AMD&rsquo;s hipify tables plus curated porting notes: runtime and driver API, cuBLAS, cuFFT, cuRAND, cuSPARSE, cuSOLVER, cuTENSOR, NVRTC, cuDNN to MIOpen, CUB to hipCUB, Thrust, NCCL, NVTX. APIs hipify lists as unsupported are flagged, never renamed by guesswork. Optional hipLaunchKernelGGL launches. Coverage report per file.</p>
         </article>
         <article className="feature">
           <div className="f-num">02</div>

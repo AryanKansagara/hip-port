@@ -71,11 +71,13 @@ export default function Sources({ project, ds, update }: { project: Project; ds:
   }
 
   const handleFiles = async (list: FileList | File[]) => {
+    // Copy first: the input's FileList is live and empties when its value is reset.
+    const all = Array.from(list)
     setBusy(true); setError(null)
     try {
       const incoming: { path: string; data: Uint8Array }[] = []
       const zips: string[] = []
-      for (const f of Array.from(list)) {
+      for (const f of all) {
         const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name
         const data = new Uint8Array(await f.arrayBuffer())
         if (/\.zip$/i.test(f.name)) {
@@ -85,7 +87,7 @@ export default function Sources({ project, ds, update }: { project: Project; ds:
         } else incoming.push({ path: rel, data })
       }
       const { ds: next, rows: r } = ingest(ds, incoming)
-      await commit(next, r, { kind: zips.length ? 'zip' : 'files', fileName: zips[0] ?? (list.length === 1 ? Array.from(list)[0].name : `${list.length} files`) })
+      await commit(next, r, { kind: zips.length ? 'zip' : 'files', fileName: zips[0] ?? (all.length === 1 ? all[0].name : `${all.length} files`) })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally { setBusy(false) }

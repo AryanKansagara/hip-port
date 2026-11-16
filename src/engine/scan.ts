@@ -117,8 +117,16 @@ const DEP_SEV: Record<string, Severity> = { 'cuda-only': 'high', fork: 'medium',
 export function workItems(files: FileResult[], deps: DepsResult | null, depsPath: string): WorkItem[] {
   const out: WorkItem[] = []
   for (const f of files) {
+    // The same line repeated through a file (a guard macro, a copied reduction loop) shares one
+    // key, so it is one item with a count rather than a run of indistinguishable rows.
+    const repeats = new Map<string, { item: WorkItem; n: number }>()
     for (const h of f.hazards) {
-      out.push({ key: `hazard|${f.path}|${h.rule}|${norm(h.snippet)}`, severity: h.severity, category: 'hazard', file: f.path, line: h.line, title: RULE_BY_ID[h.rule].title, detail: h.message, fix: h.fix })
+      const key = `hazard|${f.path}|${h.rule}|${norm(h.snippet)}`
+      const seen = repeats.get(key)
+      if (seen) { seen.item.title = `${RULE_BY_ID[h.rule].title} (${++seen.n} places)`; continue }
+      const item: WorkItem = { key, severity: h.severity, category: 'hazard', file: f.path, line: h.line, title: RULE_BY_ID[h.rule].title, detail: h.message, fix: h.fix }
+      repeats.set(key, { item, n: 1 })
+      out.push(item)
     }
     for (const u of f.uses) {
       const sev = API_SEV[u.status]

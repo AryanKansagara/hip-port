@@ -11,6 +11,7 @@ import { parseRequirements, parseCondaEnv, rocmRequirements } from './pydeps.ts'
 import { readZip, writeZip, crc32 } from './zip.ts'
 import { scan, diffLines, worklistCsv, readiness, snapshotOf, compareSnapshots, coveragePct } from './scan.ts'
 import { SAMPLES, HERO_KERNEL } from './sample.ts'
+import { highlight } from '../hl.ts'
 
 const rules = (src: string, t = 'gfx942') => detect(src, mask(src), target(t)).map(h => h.rule)
 
@@ -394,4 +395,18 @@ test('NVIDIA vectorAdd sample translates with nothing unmapped', () => {
   assert.ok(!/\bcuda[A-Z]\w+\(/.test(mask(f.translated).code))
   // The licence header is a comment and stays byte for byte.
   assert.ok(f.translated.startsWith('/* Copyright (c) 2022, NVIDIA CORPORATION.'))
+})
+
+test('a hazard line repeated through a file is one worklist item with a count', () => {
+  const guard = '#if __CUDA_ARCH__ >= 610\nint a;\n#endif\n'
+  const r = scan([{ path: 'k.cu', text: guard.repeat(3) + '#if __CUDA_ARCH__ >= 800\nint b;\n#endif\n' }], null, { target: 'gfx942', ggl: false })
+  const items = r.items.filter(i => i.category === 'hazard')
+  assert.equal(new Set(items.map(i => i.key)).size, items.length)
+  assert.deepEqual(items.map(i => [i.title, i.line]), [['__CUDA_ARCH__ guard (3 places)', 1], ['__CUDA_ARCH__ guard', 10]])
+})
+
+test('highlighter keeps a multi-line block comment as one comment', () => {
+  const lines = highlight('/* for the\n * http://example.org licence\n */\nint x;')
+  assert.deepEqual(lines.slice(0, 3).map(l => l.map(s => s[0])), [['c'], ['c'], ['c']])
+  assert.equal(lines[3][0][0], 'k')
 })

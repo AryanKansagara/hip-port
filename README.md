@@ -10,7 +10,7 @@ hipify gets most names right. The time goes into everything after: reductions th
 
 ## Features
 
-- **Translator**: comment- and string-aware, over an explicit mapping table plus library families (runtime, driver, cuBLAS/cuBLASLt, cuFFT, cuRAND, cuSPARSE, cuSOLVER, cuDNN to MIOpen, CUB, Thrust, NCCL, NVTX, fp16/bf16/fp8 types, headers). Project-defined macros are never renamed; unknown CUDA names are reported, not guessed. Optional `hipLaunchKernelGGL` launch rewriting, coverage report per file.
+- **Translator**: comment- and string-aware, over the rename and unsupported tables generated from AMD's `hipify-perl` (about 5,200 renames and 3,600 unsupported identifiers) plus a curated table of porting notes (runtime, driver, cuBLAS/cuBLASLt, cuFFT, cuRAND, cuSPARSE, cuSOLVER, cuTENSOR, NVRTC, cuDNN to MIOpen, CUB, Thrust, NCCL, NVTX, fp16/bf16/fp8 types, headers). Applies hipify's argument fix-ups (`HIP_SYMBOL`, `reinterpret_cast<const void*>`), de-duplicates collapsed includes, never renames project-defined names, and reports unknown CUDA names instead of guessing. Optional `hipLaunchKernelGGL` launch rewriting, coverage report per file.
 - **Hazard detectors**: hard-coded warp size, shuffle reductions starting at 16, shuffles without width, 32-bit masks and ballots, lane bit shifts, warp-synchronous tails, inline PTX, texture references, cooperative groups, device-side launches, sm_80-only intrinsics, WMMA, `__CUDA_ARCH__` guards. Severity follows the gfx target (wave64 CDNA vs wave32 RDNA).
 - **Python stack check** for requirements.txt and environment.yml against a dated package table, with a rewritten `requirements-rocm.txt`.
 - **Targets**: gfx942, gfx950, gfx90a, gfx1201, gfx1100, gfx1030 with wave size, matrix cores and FP8 format (FNUZ vs OCP).
@@ -28,3 +28,25 @@ npm run build
 ```
 
 Optional sync: copy `.env.example` to `.env` with `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`.
+
+## Mapping data
+
+`src/engine/hipifyTable.ts` is generated from [ROCm/HIPIFY](https://github.com/ROCm/HIPIFY) `bin/hipify-perl` (MIT licence). To refresh it:
+
+```sh
+curl -sLO https://raw.githubusercontent.com/ROCm/HIPIFY/amd-staging/bin/hipify-perl
+node scripts/gen-hipify-table.mjs hipify-perl <commit> <yyyy-mm-dd>
+npm test
+```
+
+The script only reads the file as text. `npm test` then checks that the curated notes in `mapping.ts` still agree with the official names.
+
+The tests run the translator over real sources in `src/engine/fixtures/` (HIPIFY's own unit tests with their expected output, and NVIDIA's vectorAdd sample); see the README there for sources and licences.
+
+## Known gaps
+
+- Text-based, not a compiler front end: it cannot tell that a plain function name is a template (hipify-clang adds `HIP_KERNEL_NAME` there), does not expand macros that hide a `<<<...>>>` launch, and does not reorder arguments for the few calls where hipify-clang does.
+- The hipify table tracks the newest HIP release, so a handful of names may be missing from an older ROCm install.
+- cuDNN to MIOpen covers handle, descriptor and the common forward calls only; everything else is flagged for a hand port.
+- Generic device helpers hipify lists as unsupported (`umin`, `saturate`, `mul24`) are not flagged, because a text pass cannot tell them from your own functions.
+- Python package statuses are a dated, curated table.
