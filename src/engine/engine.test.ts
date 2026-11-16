@@ -410,3 +410,28 @@ test('highlighter keeps a multi-line block comment as one comment', () => {
   assert.deepEqual(lines.slice(0, 3).map(l => l.map(s => s[0])), [['c'], ['c'], ['c']])
   assert.equal(lines[3][0][0], 'k')
 })
+
+test('direct wheel URLs are read as packages and CUDA builds are caught', () => {
+  // Line shapes from text-generation-webui requirements/full/requirements.txt.
+  const text = [
+    'transformers==5.6.*',
+    'https://download.pytorch.org/whl/cu128/xformers-0.0.33-cp39-abi3-manylinux_2_28_x86_64.whl; platform_system == "Linux" and platform_machine == "x86_64"',
+    'https://github.com/mjun0812/flash-attention-prebuild-wheels/releases/download/v0.9.0/flash_attn-2.8.3torch2.9-cp313-cp313-linux_x86_64.whl; platform_system == "Linux"',
+    'https://github.com/turboderp-org/exllamav3/releases/download/v0.0.34/exllamav3-0.0.34.torch2.9.0-cp313-cp313-linux_x86_64.whl',
+    'torch @ https://download.pytorch.org/whl/cu121/torch-2.3.1%2Bcu121-cp311-cp311-linux_x86_64.whl',
+  ].join('\n')
+  const r = parseRequirements(text)
+  assert.deepEqual(r.deps.map(d => d.name), ['transformers', 'xformers', 'flash_attn', 'exllamav3', 'torch'])
+  assert.deepEqual(r.deps.map(d => d.cudaLocal), [undefined, 'cu128', undefined, undefined, 'cu121'])
+  assert.equal(r.deps[2].status, 'fork')
+  assert.deepEqual(r.errors, [])
+  const out = rocmRequirements(r)
+  assert.ok(!/cu128|cu121/.test(out.replace(/^#.*$/gm, '')), out)
+  assert.match(out, /exllamav3-0\.0\.34/)
+})
+
+test('a package listed once per platform is one worklist item', () => {
+  const req = 'https://download.pytorch.org/whl/cu128/xformers-0.0.33-cp39-abi3-manylinux_2_28_x86_64.whl; platform_system == "Linux"\nhttps://download.pytorch.org/whl/cu128/xformers-0.0.33-cp39-abi3-win_amd64.whl; platform_system == "Windows"\n'
+  const r = scan([], { path: 'requirements.txt', text: req }, { target: 'gfx942', ggl: false })
+  assert.deepEqual(r.items.map(i => [i.title, i.severity]), [['xformers pinned to cu128: install the ROCm build', 'high']])
+})

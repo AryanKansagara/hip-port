@@ -150,7 +150,10 @@ export function workItems(files: FileResult[], deps: DepsResult | null, depsPath
     for (const x of deps.cudaIndexes) out.push({ key: `dependency|${depsPath}|index|${x.url}`, severity: 'high', category: 'dependency', file: depsPath, line: x.line, title: 'Package index points at CUDA wheels', detail: x.url, fix: 'Replace with the PyTorch ROCm index.' })
     for (const c of deps.cudaChannels) out.push({ key: `dependency|${depsPath}|channel|${c}`, severity: 'medium', category: 'dependency', file: depsPath, line: 0, title: `Conda channel “${c}” only serves CUDA packages`, detail: '', fix: 'Remove the channel.' })
   }
-  return out.sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity) || a.file.localeCompare(b.file) || a.line - b.line)
+  // One row per key: a package listed once per platform marker is still one thing to fix.
+  const keys = new Set<string>()
+  const unique = out.filter(i => !keys.has(i.key) && keys.add(i.key))
+  return unique.sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity) || a.file.localeCompare(b.file) || a.line - b.line)
 }
 
 export const STATUS_LABEL: Record<string, string> = { ok: 'works on ROCm', rocm: 'install the ROCm build', fork: 'needs the ROCm fork or a source build', partial: 'partly supported', 'cuda-only': 'CUDA only', unknown: 'not in table' }

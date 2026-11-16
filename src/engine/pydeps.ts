@@ -73,6 +73,8 @@ export interface Dep {
   checked?: string
   /** For torch-family pins with +cuXXX local versions */
   cudaLocal?: string
+  /** Set when the requirement is a direct wheel or archive URL */
+  url?: string
 }
 
 export interface DepsResult {
@@ -119,6 +121,19 @@ export function parseRequirements(text: string): DepsResult {
     if (idx) { if (/\/cu\d+|nvidia|cuda/i.test(idx[1])) r.cudaIndexes.push({ line, url: idx[1] }); return }
     if (/^-[rc]\s|^--requirement|^--constraint/.test(s)) { r.errors.push({ line, message: `Includes another file (${s}); upload it too to check its packages.` }); return }
     if (/^-/.test(s)) return
+    // Direct wheel / archive URL, bare or as "name @ url". The package name comes from the file
+    // name, and a cuNNN path segment or +cuNNN local version marks a CUDA build.
+    const direct = s.match(/^(?:([\w.-]+)\s*@\s*)?((?:https?|file):\/\/[^\s;]+)/)
+    if (direct && !/^git\+/.test(direct[2]) && !/#egg=/.test(s)) {
+      const fileName = decodeURIComponent(direct[2].split(/[?#]/)[0].split('/').pop() ?? '')
+      const name = direct[1] ?? fileName.match(/^([A-Za-z0-9][A-Za-z0-9._]*?)-\d/)?.[1]
+      if (!name) { r.errors.push({ line, message: `Could not tell which package “${direct[2]}” installs` }); return }
+      const d = classify(name, '@ url', line, rawLine, 'pip')
+      d.url = direct[2]
+      d.cudaLocal = decodeURIComponent(direct[2]).match(/[/+](cu\d{2,3})(?=[/.\-_]|$)/)?.[1]
+      r.deps.push(d)
+      return
+    }
     const egg = s.match(/#egg=([\w.-]+)/) ?? s.match(/^([\w.-]+)\s*@\s*\S+/)
     if (egg) { r.deps.push(classify(egg[1], s.includes('@') ? '@ url' : 'git', line, rawLine, 'pip')); return }
     const m = s.match(/^([A-Za-z0-9][\w.-]*)\s*(\[[^\]]*\])?\s*([^;]*)/)
@@ -172,6 +187,8 @@ export function rocmRequirements(r: DepsResult): string {
       continue
     }
     const k = knownFor(d.name)
+    if (d.url && d.cudaLocal && (!k || k.replace === undefined)) { out.push(`# removed ${d.name}: the pinned wheel is a ${d.cudaLocal} build. ${k?.action ?? 'Install a ROCm build or build from source.'}`); continue }
+    if (d.url && !(k && k.replace !== undefined)) { out.push(d.raw.trim()); continue }
     if (k && k.replace !== undefined) { out.push(k.replace ? k.replace : `# removed ${d.name}: ${k.action}`); continue }
     const spec = d.spec.replace(/\+cu\d+/, '').replace(/^=(?!=)/, '==')
     out.push(`${d.name}${spec}${d.status === 'partial' || d.status === 'fork' ? `  # ${d.action}` : ''}`)
