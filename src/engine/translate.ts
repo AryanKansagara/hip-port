@@ -30,8 +30,27 @@ export interface TranslateOptions {
 
 interface Edit { start: number; end: number; text: string }
 
-// Anything that looks like a CUDA API name but has no mapping is reported as unmapped.
-const CUDA_LIKE = /^(?:cuda[A-Z_]|cu[A-Z]|CU_|CUDA_|CUDART_|cublas|CUBLAS|cufft|CUFFT|curand|CURAND|cusparse|CUSPARSE|cusolver|CUSOLVER|cudnn|CUDNN|nvtx|nccl)/
+// A name with no mapping is reported as unmapped only when it is shaped like an API use: a
+// camel-case call or _t type with a CUDA library prefix, or an upper-case constant that is not
+// invoked like a project macro. Plain variables such as cublasHandle, cuDevice or cuda_ctx are
+// left alone; hipify's own leftover warning is the narrower /\bcuda[A-Z]\w+/.
+const CUDA_CALL = /^(?:cuda|cu|cublas|cublasLt|cufft|curand|cusparse|cusolver|cudnn|cutensor|nvrtc|nvtx)[A-Z]\w*$/
+const CUDA_CONST = /^(?:CU|CUDA|CUDART|CUBLAS|CUBLASLT|CUFFT|CURAND|CUSPARSE|CUSOLVER|CUDNN|CUTENSOR|NVRTC)_[A-Z0-9_]+$/
+const cudaLike = (id: string, call: boolean) => CUDA_CONST.test(id) ? !call : CUDA_CALL.test(id) && (call || id.endsWith('_t'))
+
+// Argument fix-ups hipify applies to host functions after renaming (transformHostFunctions):
+// [argument index, 'wrap' | 'drop', wrapper].
+const HOST_FIX: Record<string, [number, 'wrap' | 'drop', string]> = {
+  hipMemcpyToSymbol: [0, 'wrap', 'HIP_SYMBOL'], hipMemcpyToSymbolAsync: [0, 'wrap', 'HIP_SYMBOL'],
+  hipGetSymbolAddress: [1, 'wrap', 'HIP_SYMBOL'], hipGetSymbolSize: [1, 'wrap', 'HIP_SYMBOL'], hipGetTextureReference: [1, 'wrap', 'HIP_SYMBOL'],
+  hipMemcpyFromSymbol: [1, 'wrap', 'HIP_SYMBOL'], hipMemcpyFromSymbolAsync: [1, 'wrap', 'HIP_SYMBOL'], hipGraphMemcpyNodeSetParamsToSymbol: [1, 'wrap', 'HIP_SYMBOL'],
+  hipGraphExecMemcpyNodeSetParamsToSymbol: [2, 'wrap', 'HIP_SYMBOL'], hipGraphMemcpyNodeSetParamsFromSymbol: [2, 'wrap', 'HIP_SYMBOL'],
+  hipGraphExecMemcpyNodeSetParamsFromSymbol: [3, 'wrap', 'HIP_SYMBOL'], hipGraphAddMemcpyNodeToSymbol: [4, 'wrap', 'HIP_SYMBOL'], hipGraphAddMemcpyNodeFromSymbol: [5, 'wrap', 'HIP_SYMBOL'],
+  hipFuncSetAttribute: [0, 'wrap', 'reinterpret_cast<const void*>'], hipFuncSetCacheConfig: [0, 'wrap', 'reinterpret_cast<const void*>'], hipFuncSetSharedMemConfig: [0, 'wrap', 'reinterpret_cast<const void*>'],
+  hipLaunchCooperativeKernel: [0, 'wrap', 'reinterpret_cast<const void*>'], hipLaunchKernel: [0, 'wrap', 'reinterpret_cast<const void*>'], hipFuncGetAttributes: [1, 'wrap', 'reinterpret_cast<const void*>'],
+  // The HIP module occupancy calls have no blockSizeToDynamicSMemSize callback argument.
+  hipModuleOccupancyMaxPotentialBlockSize: [3, 'drop', ''], hipModuleOccupancyMaxPotentialBlockSizeWithFlags: [3, 'drop', ''],
+}
 
 /** Macro names and function names defined in this source, so a user's own cudaCheck() survives. */
 export function definedNames(src: string, m: Masked = mask(src)): Set<string> {
@@ -56,6 +75,7 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
   // Headers
   const includeSpans: [number, number][] = []
   let hasHipRuntime = false
+  const seenHeaders = new Set<string>()
   for (const x of m.code.matchAll(/^[ \t]*#[ \t]*include[ \t]*([<"])([^>"\n]+)[>"]/gm)) {
     const lineEnd = x.index! + x[0].length
     includeSpans.push([x.index!, lineEnd])
@@ -63,15 +83,21 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
     const start = x.index! + x[0].length - 1 - x[2].length
     if (name.startsWith('hip/hip_runtime')) hasHipRuntime = true
     const h = lookupHeader(name)
-    if (!h) continue
+    if (!h) { seenHeaders.add(name); continue }
     const line = lineOf(m, x.index!)
     note({ cuda: name, hip: h.hip, lib: h.lib, status: h.status, via: h.via, note: h.note, kind: 'header' }, line)
     if (h.hip && h.hip !== name) {
-      edits.push({ start, end: start + x[2].length, text: h.hip })
+      if (seenHeaders.has(h.hip)) {
+        // Several CUDA headers collapse into one HIP header; keep the first include only.
+        const nl = src.indexOf('\n', lineEnd)
+        edits.push({ start: x.index!, end: nl < 0 ? src.length : nl + 1, text: '' })
+      } else edits.push({ start, end: start + x[2].length, text: h.hip })
       if (h.hip.startsWith('hip/hip_runtime')) hasHipRuntime = true
     }
+    seenHeaders.add(h.hip ?? name)
   }
   const inInclude = (i: number) => includeSpans.some(([a, b]) => i >= a && i < b)
+  const isCall = (end: number) => /^\s*\(/.test(m.code.slice(end, end + 8))
 
   // Identifiers
   let usesCuda = false
@@ -82,7 +108,7 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
     if (/^\d/.test(id) || inInclude(at)) continue
     if (id === 'cub' && /^\s*::/.test(m.code.slice(at + 3, at + 8))) {
       edits.push({ start: at, end: at + 3, text: 'hipcub' })
-      note({ cuda: 'cub::', hip: 'hipcub::', lib: 'cub', status: 'ok', via: 'table', kind: 'api' }, lineOf(m, at))
+      note({ cuda: 'cub::', hip: 'hipcub::', lib: 'cub', status: 'ok', via: 'hipify', kind: 'api' }, lineOf(m, at))
       usesCuda = true
       continue
     }
@@ -93,12 +119,21 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
     if (defined.has(id)) continue
     const mp = lookup(id)
     if (!mp) {
-      if (CUDA_LIKE.test(id)) note({ cuda: id, hip: null, lib: 'runtime', status: 'unmapped', via: 'none', note: 'Looks like a CUDA API name but is not in the mapping table.', kind: 'api' }, lineOf(m, at))
+      if (cudaLike(id, isCall(at + id.length))) note({ cuda: id, hip: null, lib: 'runtime', status: 'unmapped', via: 'none', note: 'Looks like a CUDA API name but is in neither the hipify table nor the curated one.', kind: 'api' }, lineOf(m, at))
       continue
     }
     usesCuda = true
     note({ cuda: id, hip: mp.hip, lib: mp.lib, status: mp.status, via: mp.via, note: mp.note, kind: 'api' }, lineOf(m, at))
     if (mp.hip && mp.hip !== id) edits.push({ start: at, end: at + id.length, text: mp.hip })
+    const fix = mp.hip ? HOST_FIX[mp.hip] : undefined
+    if (fix) hostFix(m.code, src, at + id.length, fix, edits)
+  }
+  // `using namespace cub;` has no :: after the name.
+  for (const x of m.code.matchAll(/\busing\s+namespace\s+(cub)\s*;/g)) {
+    const at = x.index! + x[0].lastIndexOf('cub')
+    edits.push({ start: at, end: at + 3, text: 'hipcub' })
+    note({ cuda: 'cub::', hip: 'hipcub::', lib: 'cub', status: 'ok', via: 'hipify', kind: 'api' }, lineOf(m, at))
+    usesCuda = true
   }
 
   // Kernel launches
@@ -110,8 +145,10 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
     const name = piece(l.nameStart, l.nameEnd)
     const cfg = l.config.map(([a, b]) => piece(a, b))
     const args = l.argsEnd > l.argsStart ? piece(l.argsStart, l.argsEnd) : ''
-    const kname = /[<>:]/.test(name) ? `(${name})` : name
-    const text = `hipLaunchKernelGGL(${kname}, dim3(${cfg[0]}), dim3(${cfg[1]}), ${cfg[2] ?? '0'}, ${cfg[3] ?? '0'}${args ? ', ' + args : ''})`
+    // Same shape hipify emits: templated kernels go through HIP_KERNEL_NAME, dim3 is not doubled.
+    const kname = name.includes('<') ? `HIP_KERNEL_NAME(${name})` : name
+    const dim = (c: string | undefined) => !c ? 'dim3(1)' : /^dim3\b/.test(c) ? c : `dim3(${c})`
+    const text = `hipLaunchKernelGGL(${kname}, ${dim(cfg[0])}, ${dim(cfg[1])}, ${cfg[2] || '0'}, ${cfg[3] || '0'}${args ? ', ' + args : ''})`
     // Drop identifier edits inside the launch; they are already applied in `text`.
     for (let i = edits.length - 1; i >= 0; i--) if (edits[i].start >= l.nameStart && edits[i].end <= l.end) edits.splice(i, 1)
     edits.push({ start: l.nameStart, end: l.end, text })
@@ -129,8 +166,30 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
   return { out, uses: [...uses.values()], launches: launches.length, addedInclude }
 }
 
+/** Wraps or drops one argument of the call whose name ends at `nameEnd`, the way hipify does. */
+function hostFix(code: string, src: string, nameEnd: number, [idx, action, wrapper]: [number, 'wrap' | 'drop', string], edits: Edit[]) {
+  let p = nameEnd
+  while (p < code.length && /\s/.test(code[p])) p++
+  if (code[p] !== '(') return
+  const close = matchBracket(code, p)
+  if (close < 0) return
+  const a = splitArgs(code.slice(p + 1, close))[idx]
+  if (!a) return
+  const lead = a.text.length - a.text.trimStart().length
+  const start = p + 1 + a.start + lead, end = p + 1 + a.start + a.text.trimEnd().length
+  if (action === 'drop') {
+    // Take the preceding comma with it; renames inside the dropped argument go too.
+    const from = p + 1 + a.start - (idx > 0 ? 1 : 0)
+    for (let i = edits.length - 1; i >= 0; i--) if (edits[i].start >= from && edits[i].end <= end) edits.splice(i, 1)
+    edits.push({ start: from, end: p + 1 + a.start + a.text.length, text: '' })
+  } else if (!src.slice(start, end).startsWith(wrapper)) {
+    edits.push({ start, end: start, text: wrapper + '(' }, { start: end, end, text: ')' })
+  }
+}
+
 function applyEdits(s: string, edits: Edit[]): string {
-  const sorted = [...edits].sort((a, b) => b.start - a.start)
+  // Right to left; at the same offset a replacement goes before a zero-width insertion.
+  const sorted = [...edits].sort((a, b) => b.start - a.start || b.end - a.end)
   let out = s
   let floor = Infinity
   for (const e of sorted) {

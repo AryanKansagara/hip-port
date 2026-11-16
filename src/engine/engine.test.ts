@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mask, lineOf } from './lex.ts'
-import { lookup, lookupHeader } from './mapping.ts'
+import { readFileSync } from 'node:fs'
+import { lookup, lookupHeader, CURATED } from './mapping.ts'
+import { RENAMES, UNSUPPORTED, HIPIFY_SOURCE } from './hipifyTable.ts'
 import { translate, findLaunches } from './translate.ts'
 import { detect } from './hazards.ts'
 import { target } from './gfx.ts'
@@ -90,9 +92,10 @@ test('project-defined macros and helpers are never renamed', () => {
 })
 
 test('unknown CUDA-looking names are reported as unmapped, not renamed', () => {
-  const { out, uses } = translate('CU_CTX_SCHED_BLOCKING_SYNC; CUDA_ERROR_LAUNCH_TIMEOUT;')
-  assert.match(out, /CU_CTX_SCHED_BLOCKING_SYNC/)
-  assert.deepEqual(uses.filter(u => u.status === 'unmapped').map(u => u.cuda).sort(), ['CUDA_ERROR_LAUNCH_TIMEOUT', 'CU_CTX_SCHED_BLOCKING_SYNC'])
+  const { out, uses } = translate('cudaFrobnicate(1); x = CU_FROB_MODE_FAST; cublasHandle = 0; cuDevice = 0; cuda_ctx = 0; CUDA_VERIFY(1);')
+  assert.match(out, /cudaFrobnicate\(1\); x = CU_FROB_MODE_FAST;/)
+  // Variables and project macros that merely start with a CUDA prefix are not API uses.
+  assert.deepEqual(uses.filter(u => u.status === 'unmapped').map(u => u.cuda).sort(), ['CU_FROB_MODE_FAST', 'cudaFrobnicate'])
 })
 
 test('member access is not translated', () => {
@@ -105,7 +108,7 @@ test('launch conversion handles templates, defaults and nested parentheses', () 
   assert.equal(findLaunches(mask(src)).length, 2)
   const { out } = translate(src, { ggl: true })
   assert.match(out, /hipLaunchKernelGGL\(k, dim3\(grid\), dim3\(block\), 0, 0, a, f\(b, c\)\);/)
-  assert.match(out, /hipLaunchKernelGGL\(\(ns::tk<float, 4>\), dim3\(dim3\(g, 1\)\), dim3\(256\), smem, stream, x\);/)
+  assert.match(out, /hipLaunchKernelGGL\(HIP_KERNEL_NAME\(ns::tk<float, 4>\), dim3\(g, 1\), dim3\(256\), smem, stream, x\);/)
 })
 
 test('launch conversion applies identifier renames inside the arguments', () => {
@@ -272,4 +275,123 @@ test('llm sample on gfx1201: fp8 and warp intrinsic flagged, warp-32 lane math o
   assert.ok(r.files[1].translated.includes('hipLaunchKernelGGL(sampleRows'))
   assert.ok(r.files[1].translated.includes('roctxRangePushA'))
   assert.ok(r.deps!.cudaChannels.includes('nvidia'))
+})
+
+// ---- Official hipify tables and real CUDA sources ----
+
+const fixture = (name: string) => readFileSync(new URL('./fixtures/' + name, import.meta.url), 'utf8')
+const squash = (s: string) => s.replace(/\s+/g, ' ').trim().replace(/hip(blas|solver|sparse|blaslt)\/hip\1\.h/g, 'hip$1.h')
+/** Expected output lines hipify-clang's own lit tests carry as // CHECK: comments. */
+function checkLines(src: string, out: string) {
+  const have = new Set(out.split('\n').map(squash))
+  const want = [...src.matchAll(/^\s*\/\/ CHECK(?:-NEXT)?: ?(.*)$/gm)].map(x => squash(x[1])).filter(Boolean)
+  return { want: want.length, missing: want.filter(w => !have.has(w)) }
+}
+
+test('names the old prefix rules got wrong now follow the hipify table', () => {
+  assert.equal(lookup('cudaDeviceProp')?.hip, 'hipDeviceProp_t')
+  assert.equal(lookup('cudaHostAllocDefault')?.hip, 'hipHostMallocDefault')
+  assert.equal(lookup('cudaMallocHost')?.hip, 'hipHostMalloc')
+  assert.equal(lookup('cuMemFreeHost')?.hip, 'hipHostFree')
+  assert.equal(lookup('cuCtxCreate_v2')?.hip, 'hipCtxCreate')
+  assert.equal(lookup('cublasCdotu_v2_64')?.hip, 'hipblasCdotu_64')
+  assert.equal(lookup('cublasCherkEx')?.hip, 'hipblasHerkEx')
+  assert.equal(lookup('cudaDevAttrMaxGridDimY')?.hip, 'hipDeviceAttributeMaxGridDimY')
+  assert.equal(lookup('CUDA_ERROR_LAUNCH_TIMEOUT')?.hip, 'hipErrorLaunchTimeOut')
+  assert.equal(lookup('CUSPARSE_COMPUTE_16F')?.hip, 'HIPSPARSELT_COMPUTE_16F')
+  assert.equal(lookup('cudaDeviceProp')?.via, 'hipify')
+})
+
+test('identifiers hipify lists as unsupported are not given an invented HIP name', () => {
+  for (const id of ['cublasGetStatusString', 'cublasSetLoggerCallback', 'CUBLASLT_MATMUL_TILE_128x96', 'cudaGraphicsD3D9RegisterResource', 'cuMulticastGetGranularity', 'cufftXtWorkAreaPolicy_t']) {
+    const m = lookup(id)
+    assert.equal(m?.hip, null, id)
+    assert.equal(m?.status, 'unsupported', id)
+  }
+  assert.equal(lookup('__nv_fp128_sqrt')?.status, 'unsupported')
+  // Generic device helper names are not flagged without type information.
+  assert.equal(lookup('saturate'), null)
+  assert.equal(lookup('umin'), null)
+})
+
+test('curated notes never disagree with the hipify table', () => {
+  const official = new Map(RENAMES.split(' ').map(x => x.split('=') as [string, string]))
+  const unsupported = new Set(UNSUPPORTED.split(' '))
+  for (const [cuda, row] of Object.entries(CURATED)) {
+    const off = official.get(cuda)
+    if (off) assert.equal(row[0], off, `${cuda}: curated ${row[0]} vs hipify ${off}`)
+    if (unsupported.has(cuda)) assert.equal(row[0], null, `${cuda} is unsupported in hipify`)
+  }
+  assert.ok(official.size > 5000 && unsupported.size > 3000)
+  assert.match(HIPIFY_SOURCE.commit, /^[0-9a-f]{40}$/)
+})
+
+test('CUDA deprecation and removal versions come through as notes', () => {
+  assert.match(lookup('cusparseZgthr')?.note ?? '', /Removed from CUDA in 12\.0/)
+  assert.match(lookup('cudaInitDevice')?.note ?? '', /Experimental/)
+  assert.equal(lookup('cutensorCreate')?.lib, 'cutensor')
+  assert.equal(lookup('nvrtcCompileProgram')?.hip, 'hiprtcCompileProgram')
+  assert.equal(lookup('nvrtcCompileProgram')?.lib, 'nvrtc')
+})
+
+test('symbol and function-pointer arguments are wrapped like hipify does', () => {
+  const t = (s: string) => translate(s).out.split('\n').pop()
+  assert.equal(t('cudaMemcpyToSymbol(coef, h, n * sizeof(float));'), 'hipMemcpyToSymbol(HIP_SYMBOL(coef), h, n * sizeof(float));')
+  assert.equal(t('cudaGetSymbolAddress((void**)&p, lut);'), 'hipGetSymbolAddress((void**)&p, HIP_SYMBOL(lut));')
+  assert.equal(t('cudaFuncSetCacheConfig(kern, cudaFuncCachePreferL1);'), 'hipFuncSetCacheConfig(reinterpret_cast<const void*>(kern), hipFuncCachePreferL1);')
+  // Already wrapped arguments are left alone, and a rename inside the argument still applies.
+  assert.equal(t('cudaMemcpyToSymbol(HIP_SYMBOL(coef), h, 4);'), 'hipMemcpyToSymbol(HIP_SYMBOL(coef), h, 4);')
+  assert.equal(t('cudaMemcpyFromSymbol(dst, cudaTable, 4);'), 'hipMemcpyFromSymbol(dst, HIP_SYMBOL(cudaTable), 4);')
+  // The module occupancy call loses its callback argument.
+  assert.equal(t('cuOccupancyMaxPotentialBlockSize(&g, &b, f, cb, smem, limit);'), 'hipModuleOccupancyMaxPotentialBlockSize(&g, &b, f, smem, limit);')
+})
+
+test('several CUDA headers collapsing into one HIP header leave a single include', () => {
+  const { out } = translate('#include <cuda_runtime.h>\n#include <device_launch_parameters.h>\n#include <curand_kernel.h>\n#include <curand_normal.h>\n#include <cublas_v2.h>\nint x;\n')
+  assert.equal(out, '#include <hip/hip_runtime.h>\n#include <hiprand/hiprand_kernel.h>\n#include <hipblas/hipblas.h>\nint x;\n')
+})
+
+test('using namespace cub becomes hipcub', () => {
+  assert.match(translate('using namespace cub;\nBlockReduce<int, 128> r;').out, /using namespace hipcub;/)
+})
+
+test('HIPIFY headers test: every expected include is produced and none is duplicated', () => {
+  const src = fixture('hipify-headers_test_09.cu')
+  const { out } = translate(src)
+  const c = checkLines(src, out)
+  assert.ok(c.want >= 20)
+  assert.deepEqual(c.missing, [])
+  const includes = out.split('\n').filter(l => /^#include/.test(l))
+  assert.equal(new Set(includes).size, includes.length)
+  assert.ok(!includes.some(l => /cuda|cublas|curand|cufft|cusparse/.test(l)), includes.join('\n'))
+})
+
+test('HIPIFY runtime functions excerpt matches the expected hipify output line for line', () => {
+  const src = fixture('hipify-runtime_functions.excerpt.cu')
+  const r = translate(src)
+  const c = checkLines(src, r.out)
+  assert.ok(c.want >= 25)
+  assert.deepEqual(c.missing, [])
+  assert.deepEqual(r.uses.filter(u => u.status === 'unmapped'), [])
+})
+
+test('HIPIFY square sample converts the launch to hipLaunchKernelGGL', () => {
+  const src = fixture('hipify-square.cu')
+  const r = translate(src, { ggl: true })
+  const c = checkLines(src, r.out)
+  // hipify-clang knows vector_square is a template and adds HIP_KERNEL_NAME; a text pass cannot.
+  assert.deepEqual(c.missing, ['hipLaunchKernelGGL(HIP_KERNEL_NAME(vector_square), dim3(blocks), dim3(threadsPerBlock), 0, 0, C_d, A_d, N);'])
+  assert.match(r.out, /hipLaunchKernelGGL\(vector_square, dim3\(blocks\), dim3\(threadsPerBlock\), 0, 0, C_d, A_d, N\);/)
+})
+
+test('NVIDIA vectorAdd sample translates with nothing unmapped', () => {
+  const r = scan([{ path: 'vectorAdd.cu', text: fixture('nvidia-vectorAdd.cu') }], null, { target: 'gfx942', ggl: false })
+  const f = r.files[0]
+  assert.deepEqual(f.uses.filter(u => u.status === 'unmapped' || u.status === 'unsupported').map(u => u.cuda), [])
+  assert.match(f.translated, /hipError_t err = hipSuccess;/)
+  assert.match(f.translated, /err = hipMalloc\(\(void \*\*\)&d_A, size\);/)
+  assert.match(f.translated, /hipGetErrorString\(err\)/)
+  assert.ok(!/\bcuda[A-Z]\w+\(/.test(mask(f.translated).code))
+  // The licence header is a comment and stays byte for byte.
+  assert.ok(f.translated.startsWith('/* Copyright (c) 2022, NVIDIA CORPORATION.'))
 })

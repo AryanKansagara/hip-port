@@ -1,9 +1,14 @@
-// CUDA -> HIP identifier and header mapping, after the hipify tables (ROCm 6.x / 7.0 naming).
-// Explicit entries win; then family rules (runtime, cuBLAS, cuFFT, ...) rename by prefix the way
-// hipify does for libraries that mirror the CUDA API one to one. Anything that looks like CUDA
-// and is not covered is reported as unmapped and left untouched.
+// CUDA -> HIP identifier and header mapping.
+// Three layers, first hit wins:
+//   1. the curated table below: notes, review status and the parts hipify does not cover
+//      (cuDNN -> MIOpen, NVTX -> ROCTX, WMMA, version macros);
+//   2. the official hipify-perl tables (hipifyTable.ts, generated): renames, the list of CUDA
+//      identifiers hipify reports as unsupported, and CUDA deprecation / removal versions;
+//   3. two family rules where no rename happens: cuDNN (port by hand) and NCCL (RCCL keeps names).
+// Anything else that looks like CUDA is reported as unmapped and left untouched.
+import { RENAMES, EXPERIMENTAL, UNSUPPORTED, DEVICE_UNSUPPORTED, DEPRECATED, REMOVED, INCLUDES } from './hipifyTable.ts'
 
-export type Lib = 'runtime' | 'driver' | 'cublas' | 'cublaslt' | 'cufft' | 'curand' | 'cusparse' | 'cusolver' | 'cudnn' | 'nccl' | 'thrust' | 'cub' | 'nvtx' | 'complex' | 'fp' | 'wmma' | 'coop' | 'macro'
+export type Lib = 'runtime' | 'driver' | 'cublas' | 'cublaslt' | 'cufft' | 'curand' | 'cusparse' | 'cusolver' | 'cutensor' | 'nvrtc' | 'cufile' | 'cudnn' | 'nccl' | 'thrust' | 'cub' | 'nvtx' | 'complex' | 'fp' | 'wmma' | 'coop' | 'macro'
 export type Status = 'ok' | 'partial' | 'deprecated' | 'unsupported'
 
 export interface Mapping {
@@ -11,8 +16,8 @@ export interface Mapping {
   lib: Lib
   status: Status
   note?: string
-  /** 'table' = explicit entry, 'family' = prefix rule */
-  via: 'table' | 'family'
+  /** 'table' = curated entry, 'hipify' = official hipify-perl table, 'family' = prefix rule */
+  via: 'table' | 'hipify' | 'family'
 }
 
 export const LIBS: Record<Lib, { cuda: string; rocm: string; note?: string }> = {
@@ -24,6 +29,9 @@ export const LIBS: Record<Lib, { cuda: string; rocm: string; note?: string }> = 
   curand: { cuda: 'cuRAND', rocm: 'hipRAND (rocRAND backend)' },
   cusparse: { cuda: 'cuSPARSE', rocm: 'hipSPARSE (rocSPARSE backend)' },
   cusolver: { cuda: 'cuSOLVER', rocm: 'hipSOLVER (rocSOLVER backend)' },
+  cutensor: { cuda: 'cuTENSOR', rocm: 'hipTensor', note: 'hipTensor covers contraction, reduction and permutation; check the operation you use.' },
+  nvrtc: { cuda: 'NVRTC', rocm: 'hipRTC', note: 'hipRTC compiles HIP source to a code object for the current device; PTX and NVVM outputs do not exist.' },
+  cufile: { cuda: 'cuFile (GDS)', rocm: 'hipFile' },
   cudnn: { cuda: 'cuDNN', rocm: 'MIOpen', note: 'Not a drop-in: MIOpen needs Find/solution calls before convolutions, and descriptor setters differ.' },
   nccl: { cuda: 'NCCL', rocm: 'RCCL', note: 'RCCL keeps the nccl* API names; only the header and link library change.' },
   thrust: { cuda: 'Thrust', rocm: 'rocThrust', note: 'Same thrust:: namespace and headers; link rocThrust.' },
@@ -47,9 +55,9 @@ const T: Record<string, Row> = {
   cudaMallocManaged: ['hipMallocManaged', 'runtime', 'partial', 'Page migration on Instinct GPUs needs HSA_XNACK=1 and an XNACK-enabled build (gfx90a:xnack+); otherwise managed memory behaves like pinned host memory.'],
   cudaMemAdvise: ['hipMemAdvise', 'runtime', 'partial', 'Advice hints are honoured only with XNACK enabled.'],
   cudaMemPrefetchAsync: ['hipMemPrefetchAsync', 'runtime', 'partial', 'Requires XNACK for real migration.'],
-  cudaMemcpyToSymbol: ['hipMemcpyToSymbol', 'runtime', 'partial', 'Wrap the symbol: hipMemcpyToSymbol(HIP_SYMBOL(sym), ...).'],
-  cudaMemcpyFromSymbol: ['hipMemcpyFromSymbol', 'runtime', 'partial', 'Wrap the symbol: hipMemcpyFromSymbol(dst, HIP_SYMBOL(sym), ...).'],
-  cudaGetSymbolAddress: ['hipGetSymbolAddress', 'runtime', 'partial', 'Wrap the symbol with HIP_SYMBOL().'],
+  cudaMemcpyToSymbol: ['hipMemcpyToSymbol', 'runtime', 'ok', 'The symbol argument is wrapped in HIP_SYMBOL() for you.'],
+  cudaMemcpyFromSymbol: ['hipMemcpyFromSymbol', 'runtime', 'ok', 'The symbol argument is wrapped in HIP_SYMBOL() for you.'],
+  cudaGetSymbolAddress: ['hipGetSymbolAddress', 'runtime', 'ok', 'The symbol argument is wrapped in HIP_SYMBOL() for you.'],
   cudaDeviceSetSharedMemConfig: ['hipDeviceSetSharedMemConfig', 'runtime', 'partial', 'Accepted but ignored: AMD LDS has no bank-size setting.'],
   cudaFuncSetSharedMemConfig: ['hipFuncSetSharedMemConfig', 'runtime', 'partial', 'Accepted but ignored on AMD GPUs.'],
   cudaDeviceSetCacheConfig: ['hipDeviceSetCacheConfig', 'runtime', 'partial', 'Accepted but ignored on AMD GPUs.'],
@@ -58,15 +66,16 @@ const T: Record<string, Row> = {
   cudaBindTexture2D: ['hipBindTexture2D', 'runtime', 'deprecated', 'Texture references are deprecated in HIP and unsupported in recent ROCm. Rewrite with texture objects.'],
   cudaBindTextureToArray: ['hipBindTextureToArray', 'runtime', 'deprecated', 'Texture references are deprecated. Rewrite with texture objects.'],
   cudaUnbindTexture: ['hipUnbindTexture', 'runtime', 'deprecated', 'Texture references are deprecated. Rewrite with texture objects.'],
-  cudaGetTextureReference: [null, 'runtime', 'unsupported', 'Texture references are not available; use hipTextureObject_t.'],
+  cudaGetTextureReference: ['hipGetTextureReference', 'runtime', 'deprecated', 'Texture references are deprecated; use hipTextureObject_t.'],
   cudaSetDoubleForDevice: [null, 'runtime', 'unsupported', 'Removed from CUDA and absent from HIP; delete the call.'],
   cudaSetDoubleForHost: [null, 'runtime', 'unsupported', 'Removed from CUDA and absent from HIP; delete the call.'],
   cudaProfilerInitialize: [null, 'runtime', 'unsupported', 'Use rocprofv3 on the command line instead.'],
   cudaProfilerStart: ['hipProfilerStart', 'runtime', 'deprecated', 'Prefer rocprofv3 range markers (roctx).'],
   cudaProfilerStop: ['hipProfilerStop', 'runtime', 'deprecated', 'Prefer rocprofv3 range markers (roctx).'],
   cudaGLRegisterBufferObject: [null, 'runtime', 'unsupported', 'Legacy GL interop; use hipGraphicsGLRegisterBuffer.'],
-  cudaLaunchKernelEx: ['hipLaunchKernelEx', 'runtime', 'partial', 'Launch attributes such as clusters are NVIDIA-only.'],
-  cudaFuncAttributeNonPortableClusterSizeAllowed: [null, 'runtime', 'unsupported', 'Thread block clusters are NVIDIA Hopper-only.'],
+  cudaLaunchKernelEx: [null, 'runtime', 'unsupported', 'The C++ template launch is not in HIP; hipify only maps cudaLaunchKernelExC to hipLaunchKernelExC.'],
+  cudaLaunchKernelExC: ['hipLaunchKernelExC', 'runtime', 'partial', 'Launch attributes such as clusters are NVIDIA-only.'],
+  cudaFuncAttributeNonPortableClusterSizeAllowed: ['hipFuncAttributeNonPortableClusterSizeAllowed', 'runtime', 'partial', 'The name exists in HIP but thread block clusters are NVIDIA Hopper-only.'],
   cudaDevAttrComputeCapabilityMajor: ['hipDeviceAttributeComputeCapabilityMajor', 'runtime', 'partial', 'AMD reports a pseudo compute capability; branch on gcnArchName instead.'],
   cudaDevAttrComputeCapabilityMinor: ['hipDeviceAttributeComputeCapabilityMinor', 'runtime', 'partial', 'AMD reports a pseudo compute capability; branch on gcnArchName instead.'],
   cudaDevAttrMultiProcessorCount: ['hipDeviceAttributeMultiprocessorCount', 'runtime'],
@@ -145,7 +154,7 @@ const T: Record<string, Row> = {
   cublasSetMathMode: ['hipblasSetMathMode', 'cublas', 'partial', 'Math modes are hints on AMD; tensor-op selection is automatic in rocBLAS/hipBLASLt.'],
   CUBLAS_TENSOR_OP_MATH: ['HIPBLAS_TENSOR_OP_MATH', 'cublas', 'partial', 'Hint only on AMD.'],
   CUBLAS_DEFAULT_MATH: ['HIPBLAS_DEFAULT_MATH', 'cublas'],
-  CUBLAS_GEMM_DEFAULT_TENSOR_OP: ['HIPBLAS_GEMM_DEFAULT', 'cublas', 'partial', 'There is no separate tensor-op algorithm enum on AMD.'],
+  CUBLAS_GEMM_DEFAULT_TENSOR_OP: [null, 'cublas', 'unsupported', 'No tensor-op algorithm enum in hipBLAS; use HIPBLAS_GEMM_DEFAULT.'],
   cublasGemmEx: ['hipblasGemmEx', 'cublas', 'partial', 'Since hipBLAS 2.0 the compute type is hipblasComputeType_t (HIPBLAS_COMPUTE_32F), not a data type. Build with HIPBLAS_V2 on older ROCm.'],
   cublasGemmStridedBatchedEx: ['hipblasGemmStridedBatchedEx', 'cublas', 'partial', 'Compute type is hipblasComputeType_t since hipBLAS 2.0.'],
   cublasLtMatmul: ['hipblasLtMatmul', 'cublaslt', 'partial', 'Check the hipBLASLt epilogue and type support for your gfx target.'],
@@ -189,8 +198,8 @@ const T: Record<string, Row> = {
   __nv_bfloat16: ['__hip_bfloat16', 'fp'],
   __nv_bfloat162: ['__hip_bfloat162', 'fp'],
   nv_bfloat16: ['hip_bfloat16', 'fp'],
-  __nv_fp8_e4m3: ['__hip_fp8_e4m3', 'fp', 'partial', 'gfx942 (MI300) uses __hip_fp8_e4m3_fnuz: different bias and NaN encoding. Pick per target.'],
-  __nv_fp8_e5m2: ['__hip_fp8_e5m2', 'fp', 'partial', 'gfx942 (MI300) uses __hip_fp8_e5m2_fnuz.'],
+  __nv_fp8_e4m3: ['__hip_fp8_e4m3_fnuz', 'fp', 'partial', 'hipify maps to the FNUZ type (gfx942, MI300): different bias and NaN encoding from CUDA. On gfx950 and RDNA4 use the OCP type __hip_fp8_e4m3.'],
+  __nv_fp8_e5m2: ['__hip_fp8_e5m2_fnuz', 'fp', 'partial', 'hipify maps to the FNUZ type (gfx942, MI300). On gfx950 and RDNA4 use the OCP type __hip_fp8_e5m2.'],
   // WMMA
   nvcuda: ['rocwmma', 'wmma', 'partial', 'rocWMMA mirrors the wmma API but fragment sizes and supported types depend on the gfx target (MFMA on CDNA, WMMA on RDNA3+).'],
   // Macros
@@ -206,7 +215,6 @@ export const HEADERS: Record<string, [string | null, Lib, Status?, string?]> = {
   'cuda_runtime_api.h': ['hip/hip_runtime_api.h', 'runtime'],
   'cuda.h': ['hip/hip_runtime.h', 'driver'],
   'device_launch_parameters.h': ['hip/hip_runtime.h', 'runtime'],
-  'device_functions.h': ['hip/hip_runtime.h', 'runtime'],
   'cuda_profiler_api.h': ['hip/hip_runtime_api.h', 'runtime'],
   'cuda_fp16.h': ['hip/hip_fp16.h', 'fp'],
   'cuda_bf16.h': ['hip/hip_bf16.h', 'fp'],
@@ -230,7 +238,10 @@ export const HEADERS: Record<string, [string | null, Lib, Status?, string?]> = {
   'cub/warp/warp_reduce.cuh': ['hipcub/hipcub.hpp', 'cub'],
   'cub/device/device_radix_sort.cuh': ['hipcub/hipcub.hpp', 'cub'],
   'cooperative_groups.h': ['hip/hip_cooperative_groups.h', 'coop'],
-  'cooperative_groups/reduce.h': [null, 'coop', 'unsupported', 'cg::reduce is not available in HIP cooperative groups; use a shuffle loop or hipCUB WarpReduce.'],
+  'cooperative_groups/reduce.h': ['hip/cooperative_groups/hip_reduce.h', 'coop', 'partial', 'Only in recent HIP releases; on older ROCm use a shuffle loop or hipCUB WarpReduce.'],
+  'cooperative_groups/scan.h': ['hip/cooperative_groups/hip_scan.h', 'coop', 'partial', 'Only in recent HIP releases.'],
+  'helper_cuda.h': ['hip/hip_runtime_api.h', 'runtime', 'partial', 'NVIDIA sample helper. checkCudaErrors, findCudaDevice and friends are not in HIP; bring your own.'],
+  'helper_math.h': ['hip/hip_vector_types.h', 'runtime', 'partial', 'NVIDIA sample helper. HIP vector types cover the operators but not every helper (lerp, clamp, reflect).'],
   'mma.h': ['rocwmma/rocwmma.hpp', 'wmma', 'partial', 'Port fragment code by hand.'],
   'nvToolsExt.h': ['roctracer/roctx.h', 'nvtx'],
   'nvtx3/nvToolsExt.h': ['roctracer/roctx.h', 'nvtx'],
@@ -240,47 +251,67 @@ export const HEADERS: Record<string, [string | null, Lib, Status?, string?]> = {
   'cuda/atomic': [null, 'runtime', 'partial', 'Use std::atomic_ref or HIP atomics; libhipcxx is in preview.'],
 }
 
-interface Family { re: RegExp; to: (m: RegExpMatchArray) => string | null; lib: Lib; status?: Status; note?: string }
-const FAMILIES: Family[] = [
-  { re: /^cublasLt(\w+)$/, to: m => 'hipblasLt' + m[1], lib: 'cublaslt' },
-  { re: /^CUBLASLT_(\w+)$/, to: m => 'HIPBLASLT_' + m[1], lib: 'cublaslt' },
-  { re: /^cublas(\w+?)(?:_v2)?$/, to: m => 'hipblas' + m[1], lib: 'cublas' },
-  { re: /^CUBLAS_COMPUTE_(\w+)$/, to: m => 'HIPBLAS_COMPUTE_' + m[1], lib: 'cublas' },
-  { re: /^CUBLAS_(\w+)$/, to: m => 'HIPBLAS_' + m[1], lib: 'cublas' },
-  { re: /^cufft(\w+)$/, to: m => 'hipfft' + m[1], lib: 'cufft' },
-  { re: /^CUFFT_(\w+)$/, to: m => 'HIPFFT_' + m[1], lib: 'cufft' },
-  { re: /^curand_(\w+)$/, to: m => 'hiprand_' + m[1], lib: 'curand' },
-  { re: /^curand(\w+)$/, to: m => 'hiprand' + m[1], lib: 'curand' },
-  { re: /^CURAND_(\w+)$/, to: m => 'HIPRAND_' + m[1], lib: 'curand' },
-  { re: /^cusparse(\w+)$/, to: m => 'hipsparse' + m[1], lib: 'cusparse' },
-  { re: /^CUSPARSE_(\w+)$/, to: m => 'HIPSPARSE_' + m[1], lib: 'cusparse' },
-  { re: /^cusolverDn(\w+)$/, to: m => 'hipsolverDn' + m[1], lib: 'cusolver' },
-  { re: /^cusolver(\w+)$/, to: m => 'hipsolver' + m[1], lib: 'cusolver' },
-  { re: /^CUSOLVER_(\w+)$/, to: m => 'HIPSOLVER_' + m[1], lib: 'cusolver' },
-  { re: /^nccl[A-Z]\w*$/, to: m => m[0], lib: 'nccl' },
-  { re: /^cuda([A-Z]\w*)$/, to: m => 'hip' + m[1], lib: 'runtime' },
-  { re: /^cudnn\w+$|^CUDNN_\w+$/, to: () => null, lib: 'cudnn', status: 'unsupported', note: 'No mechanical MIOpen equivalent; port this call by hand.' },
-  { re: /^cu[A-Z]\w*$/, to: m => 'hip' + m[0].slice(2), lib: 'driver', status: 'partial', note: 'Renamed by the driver API pattern; confirm the HIP signature.' },
-]
+const split = (s: string, sep: string) => new Map(s.split(' ').filter(Boolean).map(x => { const i = x.indexOf(sep); return [x.slice(0, i), x.slice(i + 1)] as [string, string] }))
+const OFFICIAL = split(RENAMES, '=')
+const OFFICIAL_EXPERIMENTAL = split(EXPERIMENTAL, '=')
+const OFFICIAL_UNSUPPORTED = new Set(UNSUPPORTED.split(' '))
+const OFFICIAL_DEVICE_UNSUPPORTED = new Set(DEVICE_UNSUPPORTED.split(' '))
+const CUDA_DEPRECATED = split(DEPRECATED, ':')
+const CUDA_REMOVED = split(REMOVED, ':')
+const OFFICIAL_INCLUDES = split(INCLUDES, '=')
+
+/** Library an identifier or header belongs to, from its prefix. */
+export function libOf(id: string): Lib {
+  if (/^cublasLt|^CUBLASLT/.test(id)) return 'cublaslt'
+  if (/^cublas|^CUBLAS/.test(id)) return 'cublas'
+  if (/^cufft|^CUFFT/.test(id)) return 'cufft'
+  if (/^curand|^CURAND/.test(id)) return 'curand'
+  if (/^cusparse|^CUSPARSE/.test(id)) return 'cusparse'
+  if (/^cusolver|^CUSOLVER|^(?:gesvdj|syevj|csr\w+)Info/.test(id)) return 'cusolver'
+  if (/^cutensor|^CUTENSOR/.test(id)) return 'cutensor'
+  if (/^_?nvrtc|^NVRTC/.test(id)) return 'nvrtc'
+  if (/^cu_?file|^IS_CUFILE/i.test(id)) return 'cufile'
+  if (/^cudnn|^CUDNN/.test(id)) return 'cudnn'
+  if (/^_*nv_|^__NV_/.test(id)) return 'fp'
+  if (/^_*cub/i.test(id)) return 'cub'
+  if (/^(?:make_)?cu(?:Float|Double)?Complex|^cuC[a-z]+$/.test(id)) return 'complex'
+  if (/^cu[A-Z]|^CU[a-z_]|^CUDA_(?!R_|C_)|^IS_CUDA/.test(id)) return 'driver'
+  return 'runtime'
+}
+
+const cudaAge = (id: string) => {
+  const r = CUDA_REMOVED.get(id), d = CUDA_DEPRECATED.get(id)
+  return r ? `Removed from CUDA in ${r}.` : d ? `Deprecated in CUDA since ${d}.` : undefined
+}
 
 /** Looks up a CUDA identifier. Returns null for identifiers that are not CUDA API names. */
 export function lookup(id: string): Mapping | null {
   const row = T[id]
   if (row) return { hip: row[0], lib: row[1], status: row[2] ?? 'ok', note: row[3], via: 'table' }
-  for (const f of FAMILIES) {
-    const m = id.match(f.re)
-    if (m) return { hip: f.to(m), lib: f.lib, status: f.status ?? 'ok', note: f.note, via: 'family' }
-  }
+  const hip = OFFICIAL.get(id)
+  if (hip) return { hip, lib: libOf(id), status: 'ok', note: cudaAge(id), via: 'hipify' }
+  const exp = OFFICIAL_EXPERIMENTAL.get(id)
+  if (exp) return { hip: exp, lib: libOf(id), status: 'partial', note: 'Experimental in HIP: hipify only converts this with -experimental.', via: 'hipify' }
+  if (OFFICIAL_UNSUPPORTED.has(id)) return { hip: null, lib: libOf(id), status: 'unsupported', note: ['hipify lists this as unsupported in HIP.', cudaAge(id)].filter(Boolean).join(' '), via: 'hipify' }
+  if (OFFICIAL_DEVICE_UNSUPPORTED.has(id)) return { hip: null, lib: libOf(id), status: 'unsupported', note: 'Device function or type with no HIP implementation (hipify device table).', via: 'hipify' }
+  if (/^cudnn[A-Z]\w*$|^CUDNN_\w+$/.test(id)) return { hip: null, lib: 'cudnn', status: 'unsupported', note: 'No mechanical MIOpen equivalent; port this call by hand.', via: 'family' }
+  if (/^nccl[A-Z]\w*$/.test(id)) return { hip: id, lib: 'nccl', status: 'ok', via: 'family' }
   return null
 }
+
+// hipify still emits the flat pre-ROCm 6 header names for these; the packages install them here.
+const ROCM_PATH: Record<string, string> = { 'hipblas.h': 'hipblas/hipblas.h', 'hipblaslt.h': 'hipblaslt/hipblaslt.h', 'hipsolver.h': 'hipsolver/hipsolver.h', 'hipsparse.h': 'hipsparse/hipsparse.h' }
 
 export function lookupHeader(h: string): Mapping | null {
   const row = HEADERS[h]
   if (row) return { hip: row[0], lib: row[1], status: row[2] ?? 'ok', note: row[3], via: 'table' }
+  const off = OFFICIAL_INCLUDES.get(h)
+  if (off !== undefined) return { hip: ROCM_PATH[off] ?? (off || 'hip/hip_runtime.h'), lib: libOf(h), status: 'ok', via: 'hipify' }
   if (h.startsWith('thrust/')) return { hip: h, lib: 'thrust', status: 'ok', note: 'rocThrust keeps the thrust/ header paths.', via: 'family' }
   if (h.startsWith('cub/')) return { hip: 'hipcub/hipcub.hpp', lib: 'cub', status: 'ok', via: 'family' }
   if (/^cuda\//.test(h)) return { hip: null, lib: 'runtime', status: 'unsupported', note: 'libcu++ header; check libhipcxx or rewrite.', via: 'family' }
   return null
 }
 
-export const TABLE_SIZE = Object.keys(T).length + Object.keys(HEADERS).length
+export const TABLE_SIZE = Object.keys(T).length + Object.keys(HEADERS).length + OFFICIAL.size + OFFICIAL_UNSUPPORTED.size
+export const CURATED: Readonly<Record<string, readonly [string | null, Lib, Status?, string?]>> = T
