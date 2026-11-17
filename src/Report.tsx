@@ -75,7 +75,7 @@ export default function Report({ id }: { id: string }) {
         <table className="data"><thead><tr><th>Scan</th><th>Date</th><th className="num">Critical</th><th className="num">High</th><th className="num">Readiness</th></tr></thead>
           <tbody>{project.snapshots.map(s => <tr key={s.id}><td>{s.label}</td><td>{new Date(s.at).toLocaleDateString()}</td><td className="num">{s.counts.critical}</td><td className="num">{s.counts.high}</td><td className="num">{s.score}</td></tr>)}</tbody></table>
       </>}
-      <p className="muted small report-foot">Produced with HIP Port, an independent tool not affiliated with AMD. Mappings follow the hipify tables for ROCm 6.x/7.0; verify against your ROCm release.</p>
+      <p className="muted small report-foot">Produced with HIP Port. Mappings follow the hipify tables for ROCm 6.x/7.0; verify against your ROCm release.</p>
     </article>
   )
 }
