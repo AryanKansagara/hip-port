@@ -231,7 +231,8 @@ function checklist(files: FileResult[], deps: DepsResult | null, t: Target): Che
 
 // ---------- Exports ----------
 
-const csvCell = (s: string | number) => { const v = String(s); return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v }
+/** Text a spreadsheet would run as a formula gets a leading apostrophe; numbers, negative ones too, stay numbers. */
+const csvCell = (s: string | number) => { const t = String(s), v = /^[=+\-@\t\r]/.test(t) && !/^-?\d+(\.\d+)?$/.test(t) ? `'${t}` : t; return /[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v }
 
 export function worklistCsv(items: WorkItem[], status: (key: string) => string = () => 'open'): string {
   const head = ['severity', 'category', 'file', 'line', 'title', 'detail', 'fix', 'status']

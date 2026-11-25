@@ -1,6 +1,8 @@
 // Minimal zip reader and writer. Reading uses the central directory and the platform
 // DecompressionStream('deflate-raw'); writing stores files uncompressed with CRC-32.
 
+import { exportPath } from './paths.ts'
+
 export interface ZipEntry { path: string; data: Uint8Array }
 
 const u16 = (b: Uint8Array, o: number) => b[o] | (b[o + 1] << 8)
@@ -78,11 +80,12 @@ export function crc32(b: Uint8Array): number {
 
 export function writeZip(files: { path: string; text: string }[]): Uint8Array {
   const enc = new TextEncoder()
+  const used = new Set<string>()
   const parts: Uint8Array[] = []
   const central: Uint8Array[] = []
   let offset = 0
   for (const f of files) {
-    const name = enc.encode(f.path)
+    const name = enc.encode(exportPath(f.path, used))
     const data = enc.encode(f.text)
     const crc = crc32(data)
     const h = new DataView(new ArrayBuffer(30))

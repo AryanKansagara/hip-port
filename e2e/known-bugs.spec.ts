@@ -222,20 +222,22 @@ test('#11 an HTML page or a cut-off source saved as .cu is called out', async ({
   }
 })
 
-test.fail('#12 a file name cannot become a spreadsheet formula', async ({ page }) => {
+test('#12 a file name cannot become a spreadsheet formula', async ({ page }) => {
   await project(page, [{ name: '=HYPERLINK("http:evil","x").cu', data: 'int lane = threadIdx.x % 32;\n' }])
   await tab(page, 'Worklist')
   const [, csv] = await download(page, page.getByRole('button', { name: 'Export CSV' }))
   expect(csv).not.toMatch(/(^|,)"?=/m)
 })
 
-test.fail('#12 zip paths cannot climb out of the folder they are unpacked in', async ({ page }) => {
+test('#12 zip paths cannot climb out of the folder they are unpacked in', async ({ page }) => {
   await project(page, [{ name: 'ok.cu', data: 'int lane = threadIdx.x % 32;\n' }])
   await tab(page, 'Sources')
   await upload(page, [{ name: 'x.zip', data: zip([{ path: 'a/b.cu', data: 'cudaFree(p);\n' }, { path: '../../evil.cu', data: 'cudaFree(p);\n' }]) }])
   await expect(page.getByText(/of 2 files/)).toBeVisible()
   const [, bytes] = await downloadBytes(page, page.getByRole('button', { name: 'Download .zip' }))
   expect(Object.keys(unzip(bytes)).filter((p) => p.split('/').includes('..'))).toEqual([])
+  expect(Object.keys(unzip(bytes))).toContain('b.hip')
+  await expect(reportRow(page, '../../evil.cu')).toContainText('leads out of the project folder')
 })
 
 test('#13 an import the browser refuses to store says so', async ({ page }) => {
