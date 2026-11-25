@@ -1,7 +1,7 @@
 // Project-level scan: translate every source, collect hazards and library usage, check Python
 // dependencies, and turn it all into a severity-ranked worklist and a readiness checklist.
 import { detect, SEVERITIES, type Hazard, type Severity, RULE_BY_ID } from './hazards.ts'
-import { mask } from './lex.ts'
+import { lineOf, mask } from './lex.ts'
 import { LIBS, type Lib } from './mapping.ts'
 import { target as getTarget, type Target } from './gfx.ts'
 import { definedNames, hipPath, translate, type Use } from './translate.ts'
@@ -28,6 +28,10 @@ export interface FileResult {
   coverage: Coverage
   /** True when the file has no CUDA at all (plain C++), so it is copied unchanged */
   plain: boolean
+  /** True when device code was read: a kernel, a device function or a device-side built-in */
+  kernel: boolean
+  /** Where a comment or raw string opens that is never closed; everything after it went unread */
+  unclosed?: { line: number; what: string }
 }
 
 export interface WorkItem {
@@ -71,8 +75,16 @@ function coverageOf(uses: Use[]): Coverage {
   return c
 }
 const addCov = (a: Coverage, b: Coverage): Coverage => ({ total: a.total + b.total, converted: a.converted + b.converted, partial: a.partial + b.partial, unsupported: a.unsupported + b.unsupported, unmapped: a.unmapped + b.unmapped })
-/** Share of CUDA references translated mechanically; partial mappings count half. */
-export const coveragePct = (c: Coverage) => c.total ? (c.converted + c.partial * 0.5) / c.total : 1
+/** Share of CUDA references translated mechanically; partial mappings count half. NaN (shown as —) when there are none. */
+export const coveragePct = (c: Coverage) => c.total ? (c.converted + c.partial * 0.5) / c.total : NaN
+
+const DEVICE_CODE = /\b(__global__|__device__|__shared__|threadIdx|blockIdx|blockDim|gridDim|__shfl\w*|__syncthreads)\b/
+
+/** What a source hides from the scan, for the import report, or undefined. */
+export function unclosedRemark(text: string): string | undefined {
+  const m = mask(text)
+  return m.unclosed && `The ${m.unclosed.what} opened on line ${lineOf(m, m.unclosed.at)} is never closed; nothing after it is scanned`
+}
 
 const norm = (s: string) => s.replace(/\s+/g, ' ').trim()
 
@@ -90,6 +102,7 @@ export function scan(files: SourceFile[], depsFile: SourceFile | null, opts: Sca
     return {
       path: f.path, outPath: plain ? f.path : hipPath(f.path), source: f.text, translated: plain ? f.text : tr.out, hazards, uses: tr.uses,
       launches: tr.launches, addedInclude: plain ? false : tr.addedInclude, lines: f.text.split('\n').length, coverage: coverageOf(tr.uses), plain,
+      kernel: hazards.length > 0 || DEVICE_CODE.test(m.code), ...(m.unclosed && { unclosed: { line: lineOf(m, m.unclosed.at), what: m.unclosed.what } }),
     }
   })
 
@@ -199,9 +212,12 @@ function checklist(files: FileResult[], deps: DepsResult | null, t: Target): Che
   out.push({ id: 'arch', state: 'info', title: `Build extensions for ${t.id}`, detail: `Set the target before building any C++/HIP extension so you do not compile for every architecture.`, command: `export PYTORCH_ROCM_ARCH=${t.id}` })
   const waveRules = ['warp-size-32', 'shfl-reduction-16', 'mask-32bit', 'ballot-32bit', 'lane-bit-32', 'warp-synchronous']
   const waveHits = files.reduce((s, f) => s + f.hazards.filter(h => waveRules.includes(h.rule)).length, 0)
-  out.push({ id: 'wave', state: waveHits ? (t.wave === 64 ? 'todo' : 'info') : 'pass', title: `Kernels are wavefront-size clean (${t.id} runs wave${t.wave})`, detail: waveHits ? `${waveHits} warp-size assumption${waveHits > 1 ? 's' : ''} found.${t.wave === 32 ? ' They happen to work on this wave32 target but break on Instinct GPUs.' : ''}` : 'No 32-lane assumptions found.' })
+  // A check on kernels passes only when kernels were read, and read to the end.
+  const cut = files.find(f => f.unclosed)
+  const unseen = cut ? `${cut.path} ends inside a ${cut.unclosed!.what} opened on line ${cut.unclosed!.line}; nothing after it was read.` : files.some(f => f.kernel) ? '' : 'No kernel was read.'
+  out.push({ id: 'wave', state: waveHits ? (t.wave === 64 ? 'todo' : 'info') : unseen ? 'info' : 'pass', title: `Kernels are wavefront-size clean (${t.id} runs wave${t.wave})`, detail: waveHits ? `${waveHits} warp-size assumption${waveHits > 1 ? 's' : ''} found.${t.wave === 32 ? ' They happen to work on this wave32 target but break on Instinct GPUs.' : ''}` : unseen ? `No 32-lane assumptions in what was read. ${unseen}` : 'No 32-lane assumptions found.' })
   const ptx = has('inline-ptx') || has('unsupported-intrinsic') || has('dynamic-parallelism')
-  out.push({ id: 'compile', state: ptx ? 'todo' : 'pass', title: 'No PTX, NVIDIA-only intrinsics or device-side launches', detail: ptx ? 'At least one file will not compile under hipcc until these are rewritten.' : 'Nothing that blocks compilation.' })
+  out.push({ id: 'compile', state: ptx ? 'todo' : unseen ? 'info' : 'pass', title: 'No PTX, NVIDIA-only intrinsics or device-side launches', detail: ptx ? 'At least one file will not compile under hipcc until these are rewritten.' : unseen ? `Nothing that blocks compilation in what was read. ${unseen}` : 'Nothing that blocks compilation.' })
   if (has('texture-reference')) out.push({ id: 'texture', state: 'todo', title: 'Move texture references to texture objects', detail: 'Texture references are deprecated in HIP.' })
   if (uses('cudaMallocManaged') && t.family === 'CDNA') out.push({ id: 'xnack', state: 'todo', title: 'Enable XNACK for managed memory', detail: 'cudaMallocManaged relies on page migration. On Instinct it needs an xnack+ build and HSA_XNACK=1.', command: 'export HSA_XNACK=1' })
   const fp8 = files.some(f => f.uses.some(u => /fp8|8F_E/.test(u.cuda)))

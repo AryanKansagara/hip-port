@@ -8,12 +8,15 @@ export interface Masked {
   code: string
   /** Offsets where each line starts, for offset -> line lookups. */
   lineStarts: number[]
+  /** Offset of a block comment or raw string that is never closed: nothing after it was read. */
+  unclosed?: { at: number; what: 'comment' | 'raw string' }
 }
 
 export function mask(src: string): Masked {
   const out = src.split('')
   const n = src.length
   let i = 0
+  let unclosed: Masked['unclosed']
   const blank = (a: number, b: number) => { for (let k = a; k < b; k++) if (out[k] !== '\n') out[k] = ' ' }
   // Track #include lines so `<cuda.h>` and "cublas_v2.h" stay visible as header names.
   let lineStart = 0
@@ -31,6 +34,7 @@ export function mask(src: string): Masked {
     }
     if (c === '/' && src[i + 1] === '*') {
       const end = src.indexOf('*/', i + 2)
+      if (end < 0) unclosed = { at: i, what: 'comment' }
       const j = end < 0 ? n : end + 2
       blank(i, j); i = j; continue
     }
@@ -40,6 +44,7 @@ export function mask(src: string): Masked {
       if (open > 0 && open - i < 20) {
         const delim = src.slice(i + 2, open)
         const close = src.indexOf(')' + delim + '"', open)
+        if (close < 0) unclosed = { at: i, what: 'raw string' }
         const j = close < 0 ? n : close + delim.length + 2
         blank(i + 2, j - 1); i = j; continue
       }
@@ -56,7 +61,7 @@ export function mask(src: string): Masked {
   }
   const lineStarts = [0]
   for (let k = 0; k < n; k++) if (src[k] === '\n') lineStarts.push(k + 1)
-  return { code: out.join(''), lineStarts }
+  return { code: out.join(''), lineStarts, ...(unclosed && { unclosed }) }
 }
 
 const isIdent = (c: string | undefined) => !!c && /[A-Za-z0-9_]/.test(c)
