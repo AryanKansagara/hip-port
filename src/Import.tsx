@@ -160,7 +160,9 @@ function ValidationReport({ rows }: { rows: Row[] }) {
   const skipped = rows.filter(r => r.status === 'skipped')
   const ok = rows.length - skipped.length
   const [all, setAll] = useState(false)
-  const shown = all ? rows : [...skipped.slice(0, 30), ...rows.filter(r => r.status !== 'skipped').slice(0, 10)]
+  // Imported files with a remark come before the plain ones, so a long list does not hide them.
+  const remarked = rows.filter(r => r.status !== 'skipped' && r.reason), plain = rows.filter(r => r.status !== 'skipped' && !r.reason)
+  const shown = all ? rows : [...skipped.slice(0, 30), ...remarked.slice(0, 30), ...plain.slice(0, 10)]
   return (
     <div className="panel" aria-live="polite">
       <h2>Validation report</h2>

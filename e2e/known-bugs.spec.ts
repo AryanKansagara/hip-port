@@ -312,11 +312,30 @@ test('#13 without IndexedDB the project still works in memory', async ({ page })
   await expect(page.locator('.src-list li')).toHaveCount(1)
 })
 
-test.fail('#14 a Latin-1 source is not exported with its bytes replaced', async ({ page }) => {
+test('#14 a Latin-1 source is not exported with its bytes replaced', async ({ page }) => {
   await newProject(page)
   await importFiles(page, [{ name: 'k.cu', data: new Uint8Array(Buffer.from('// José\ncudaFree(p);\n', 'latin1')) }], 1)
   await tab(page, 'Files & diff')
   expect(await translated(page)).toContain('// José')
+})
+
+test('#14 the report says how a file was read, and a UTF-16 requirements file is read', async ({ page }) => {
+  await newProject(page)
+  await importFiles(page, [
+    { name: 'k.cu', data: new Uint8Array(Buffer.from('// José\ncudaFree(p);\n', 'latin1')) }, { name: 'u.cu', data: '// José\ncudaFree(p);\n' },
+    { name: 'requirements.txt', data: new Uint8Array(Buffer.from('﻿torch==2.3.1+cu121\n', 'utf16le')) },
+  ], 3)
+  await expect(reportRow(page, 'k.cu')).toContainText('Windows-1252', { timeout: 5000 })
+  await expect(reportRow(page, 'u.cu')).toContainText('3 lines')
+  await expect(reportRow(page, 'requirements.txt')).toContainText('UTF-16 LE')
+  await tab(page, 'Python stack')
+  await expect(page.locator('table.data tbody tr')).toHaveText([/torch/])
+})
+
+test('#14 a remark is shown in the report of a long import', async ({ page }) => {
+  await newProject(page)
+  await importFiles(page, [...Array.from({ length: 15 }, (_, i) => ({ name: `f${i}.cu`, data: 'int x;\n' })), { name: 'z.cu', data: new Uint8Array([0x2f, 0x2f, 0xe9]) }], 16)
+  await expect(reportRow(page, 'z.cu')).toContainText('Windows-1252', { timeout: 5000 })
 })
 
 test.fail('#15 replacing a large file does not count it twice towards the project limit', async ({ page }) => {
