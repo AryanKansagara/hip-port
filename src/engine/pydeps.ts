@@ -119,6 +119,9 @@ function classify(name: string, spec: string, line: number, raw: string, source:
   }
 }
 
+/** Version specifiers as PEP 440 has them, or one conda-style =version[=build]. */
+const PIP_SPEC = /^(?:\(\s*)?(?:(?:(?:===|==|~=|!=|<=|>=|<|>)\s*[\w.*+!-]+\s*(?:,\s*|(?=\)|$)))*|=\s*[\w.*+!]+(?:=\S+)?)(?:\s*\))?$/
+
 export function parseRequirements(text: string): DepsResult {
   const r: DepsResult = { kind: 'requirements', deps: [], cudaIndexes: [], indexes: [], cudaChannels: [], errors: [] }
   logicalLines(text).forEach(({ line, text: rawLine }) => {
@@ -158,10 +161,16 @@ export function parseRequirements(text: string): DepsResult {
     if (egg) { r.deps.push({ ...classify(egg[1], s.includes('@') ? '@ url' : 'git', line, rawLine, 'pip'), verbatim: withoutCredentials(s) }); return }
     if (/^(?:git|hg|svn|bzr)\+/.test(s)) { r.deps.push({ ...classify(s.split(/[@#]/)[0].split('/').pop()!.replace(/\.git$/, ''), 'git', line, rawLine, 'pip'), verbatim: withoutCredentials(s) }); return }
     const m = s.match(/^([A-Za-z0-9][\w.-]*)\s*(\[[^\]]*\])?\s*([^;]*)/)
-    if (!m) { r.errors.push({ line, message: `Could not read “${withoutCredentials(s)}”` }); return }
+    if (!m) { r.errors.push({ line, message: `Could not read “${withoutCredentials(s).slice(0, 120)}”` }); return }
     const options = s.match(/(?:\s+--[a-z][\w-]*[=\s]\S+)+$/)?.[0].trim()
-    const spec = options ? m[3].replace(options, '') : m[3]
-    r.deps.push({ ...classify(m[1], (m[2] ?? '') + spec.trim(), line, rawLine, 'pip'), marker: markerOf(s), options })
+    const spec = (options ? m[3].replace(options, '') : m[3]).trim()
+    const listed = spec.match(/^\d[\w.+!-]*$/) // `torch 2.3.1+cu121`, as pip list prints it
+    if (!listed && !PIP_SPEC.test(spec)) {
+      r.errors.push({ line, message: `Could not read “${withoutCredentials(s).slice(0, 120)}”` })
+      // A known package with a mangled version still counts as that package.
+      if (!knownFor(m[1]) || !/^[=<>!~\d]/.test(spec)) return
+    }
+    r.deps.push({ ...classify(m[1], (m[2] ?? '') + (listed ? '==' : '') + spec, line, rawLine, 'pip'), marker: markerOf(s), options })
   })
   return r
 }
@@ -186,36 +195,75 @@ const markerOf = (s: string) => s.match(/(?:^[^:]*|\s);\s*(.+?)(?=\s+--\w|$)/)?.
 /** user:password@ in a URL is never shown or written to the rewritten file. */
 const withoutCredentials = (s: string) => s.replace(/(:\/\/)[^/\s@]+@/g, (all, p) => /^:\/\/(?:git|\$\{\w+\}(?::\$\{\w+\})?)@$/.test(all) ? all : p)
 
+const unquote = (v: string) => v.match(/^(["'])(.*)\1$/)?.[2] ?? v
+
 /** environment.yml: channels, conda dependencies, and the nested pip: list. Indentation-based, no YAML library. */
 export function parseCondaEnv(text: string): DepsResult {
   const r: DepsResult = { kind: 'conda', deps: [], cudaIndexes: [], indexes: [], cudaChannels: [], errors: [] }
+  const cannotRead = (v: string, line: number) => r.errors.push({ line, message: `Could not read “${withoutCredentials(v).slice(0, 120)}”` })
+  const pipItem = (v: string, line: number, raw: string) => {
+    const sub = parseRequirements(unquote(v))
+    for (const d of sub.deps) r.deps.push({ ...d, line, raw, source: 'pip' })
+    for (const x of sub.cudaIndexes) r.cudaIndexes.push({ ...x, line })
+    r.indexes.push(...sub.indexes)
+    for (const e of sub.errors) r.errors.push({ ...e, line })
+  }
+  const entry = (section: string, quoted: string, line: number, raw: string) => {
+    const v = unquote(quoted)
+    if (section === 'channels') { if (/nvidia|cuda/i.test(v)) r.cudaChannels.push(v); return }
+    const m = v.match(/^(?:[\w./:-]+::)?([A-Za-z0-9_][\w.-]*)\s*(.*)$/)
+    // A version, operator or bracket must follow the name; anything else is not a match spec.
+    if (!m || !/^(?:$|[\d=<>!~*[(])/.test(m[2])) { cannotRead(v, line); return }
+    r.deps.push(classify(m[1], m[2].trim(), line, raw, 'conda'))
+  }
+  const flow = (list: string) => [...list.matchAll(/"[^"]*"|'[^']*'|[^,\s][^,]*/g)].map(x => x[0].trim()).filter(Boolean)
   let section = ''
+  let sawDependencies = false
   let pipIndent = -1
+  // A flow list ([a, b]) still waiting for its closing bracket.
+  let pending: { line: number; text: string; pip: boolean } | null = null
+  const closeFlow = () => {
+    const p = pending!
+    const inner = p.text.match(/^\[([\s\S]*)\]\s*$/)
+    pending = null
+    if (!inner || /[[\]{}]/.test(inner[1].replace(/"[^"]*"|'[^']*'/g, '').replace(/[\w.-]\[[^\]]*\]/g, ''))) { cannotRead(p.text, p.line); return }
+    for (const v of flow(inner[1])) p.pip ? pipItem(v, p.line, v) : entry(section, v, p.line, v)
+  }
   text.split(/\r?\n/).forEach((rawLine, i) => {
     const line = i + 1
     const s = rawLine.replace(/\s+#.*$/, '')
     if (!s.trim() || s.trim().startsWith('#')) return
     const indent = s.length - s.trimStart().length
-    const top = s.match(/^(\w[\w-]*)\s*:/)
-    if (top && indent === 0) { section = top[1]; pipIndent = -1; return }
-    const item = s.match(/^(\s*)-\s*(.+)$/)
-    if (!item) return
-    const v = item[2].trim()
-    if (section === 'channels') { if (/nvidia|cuda/i.test(v)) r.cudaChannels.push(v); return }
-    if (section !== 'dependencies') return
-    if (pipIndent >= 0 && indent <= pipIndent) pipIndent = -1
-    if (/^pip\s*:\s*$/.test(v)) { pipIndent = indent; return }
-    if (pipIndent >= 0) {
-      const sub = parseRequirements(v)
-      for (const d of sub.deps) r.deps.push({ ...d, line, raw: rawLine, source: 'pip' })
-      for (const x of sub.cudaIndexes) r.cudaIndexes.push({ ...x, line })
-      r.indexes.push(...sub.indexes)
+    const top = s.match(/^(\w[\w-]*)\s*:\s*(.*)$/)
+    if (pending && !top) { pending.text += ' ' + s.trim(); if (/\]\s*$/.test(s)) closeFlow(); return }
+    if (pending) closeFlow()
+    if (top && indent === 0) {
+      section = top[1]; pipIndent = -1
+      if (section === 'dependencies') sawDependencies = true
+      if (section !== 'channels' && section !== 'dependencies') return
+      if (top[2].startsWith('[')) { pending = { line, text: top[2].trim(), pip: false }; if (/\]\s*$/.test(top[2])) closeFlow() }
+      else if (top[2] && !/^(?:null|~)$/.test(top[2])) cannotRead(s.trim(), line)
       return
     }
-    const m = v.match(/^(?:[\w-]+::)?([A-Za-z0-9][\w.-]*)\s*(.*)$/)
-    if (!m) { r.errors.push({ line, message: `Could not read “${v}”` }); return }
-    r.deps.push(classify(m[1], m[2].trim(), line, rawLine, 'conda'))
+    const item = s.match(/^(\s*)-\s*(.+)$/)
+    if (!item) { if (section === 'dependencies' || (section === '' && !/^(?:---|\.\.\.)/.test(s))) cannotRead(s.trim(), line); return }
+    const v = item[2].trim()
+    if (section !== 'channels' && section !== 'dependencies') return
+    if (section === 'dependencies') {
+      if (pipIndent >= 0 && indent <= pipIndent) pipIndent = -1
+      const pip = v.match(/^["']?pip["']?\s*:\s*(.*)$/)
+      if (pip) {
+        if (pip[1].startsWith('[')) { pending = { line, text: pip[1], pip: true }; if (/\]\s*$/.test(pip[1])) closeFlow() }
+        else if (pip[1]) cannotRead(v, line)
+        else pipIndent = indent
+        return
+      }
+      if (pipIndent >= 0) { pipItem(v, line, rawLine); return }
+    }
+    entry(section, v, line, rawLine)
   })
+  if (pending) closeFlow()
+  if (!sawDependencies) r.errors.push({ line: 1, message: 'No “dependencies:” list found.' })
   return r
 }
 
