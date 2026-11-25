@@ -1,53 +1,11 @@
 import { useRef, useState } from 'react'
+import { ingest, MAX_FILE, SKIP_DIRS, type Incoming, type Row } from './engine/ingest.ts'
 import { isDepsFile, isSource, scan, snapshotOf, type SourceFile } from './engine/scan.ts'
 import { readZip } from './engine/zip.ts'
 import { resolver } from './Project.tsx'
 import { sampleData } from './projectData.ts'
 import { changeSources, putData, saveProject, uuid, type Dataset, type ImportMeta, type Project } from './store.ts'
 import { go, Link, toast } from './ui.tsx'
-
-const MAX_FILE = 1_000_000
-const MAX_TOTAL = 25_000_000
-const SKIP_DIRS = /(^|\/)(\.git|node_modules|build|dist|__pycache__|\.venv|venv)\//
-
-export interface Incoming { path: string; data: Uint8Array; size?: number }
-export interface Row { path: string; status: 'added' | 'replaced' | 'skipped'; reason?: string; lines?: number }
-
-/** Classifies incoming files and merges them into the dataset. Pure apart from TextDecoder. */
-export function ingest(ds: Dataset, incoming: Incoming[]): { ds: Dataset; rows: Row[] } {
-  const files = [...ds.files]
-  let deps = ds.deps
-  const rows: Row[] = []
-  // Strip a shared top-level folder (repo-main/...) that zips of GitHub repos carry.
-  const tops = new Set(incoming.map(f => f.path.split('/')[0]))
-  const strip = tops.size === 1 && incoming.every(f => f.path.includes('/')) ? [...tops][0].length + 1 : 0
-  let total = files.reduce((s, f) => s + f.text.length, 0)
-  const dec = new TextDecoder('utf-8', { fatal: false })
-  for (const f of incoming) {
-    const path = f.path.slice(strip)
-    if (SKIP_DIRS.test(path)) { rows.push({ path, status: 'skipped', reason: 'Build, VCS or environment folder' }); continue }
-    const src = isSource(path), dep = isDepsFile(path)
-    if (!src && !dep) { rows.push({ path, status: 'skipped', reason: `Not a CUDA/C++ source or dependency file (${path.includes('.') ? '.' + path.split('.').pop() : 'no extension'})` }); continue }
-    const size = f.size ?? f.data.length
-    if (size > MAX_FILE) { rows.push({ path, status: 'skipped', reason: `Larger than 1 MB (${(size / 1e6).toFixed(1)} MB); likely generated` }); continue }
-    if (!f.data.length) { rows.push({ path, status: 'skipped', reason: 'Empty file' }); continue }
-    if (f.data.subarray(0, 4096).includes(0)) { rows.push({ path, status: 'skipped', reason: 'Binary content' }); continue }
-    if (total + f.data.length > MAX_TOTAL) { rows.push({ path, status: 'skipped', reason: 'Project size limit (25 MB) reached' }); continue }
-    const text = dec.decode(f.data).replace(/\r\n/g, '\n')
-    total += text.length
-    const lines = text.split('\n').length
-    if (dep) {
-      rows.push({ path, status: deps ? 'replaced' : 'added', lines, reason: deps && deps.path !== path ? `Replaces ${deps.path}` : undefined })
-      deps = { path, text }
-      continue
-    }
-    const i = files.findIndex(x => x.path === path)
-    if (i >= 0) { files[i] = { path, text }; rows.push({ path, status: 'replaced', lines }) }
-    else { files.push({ path, text }); rows.push({ path, status: 'added', lines }) }
-  }
-  files.sort((a, b) => a.path.localeCompare(b.path))
-  return { ds: { files, deps }, rows }
-}
 
 export default function Sources({ project, ds }: { project: Project; ds: Dataset }) {
   const [rows, setRows] = useState<Row[] | null>(null)
@@ -60,10 +18,10 @@ export default function Sources({ project, ds }: { project: Project; ds: Dataset
   const dirRef = useRef<HTMLInputElement>(null)
   const empty = !ds.files.length && !ds.deps
 
-  const commit = async (incoming: Incoming[], meta: Omit<ImportMeta, 'id' | 'at' | 'files' | 'skipped'>) => {
+  const commit = async (incoming: Incoming[], wrapped: boolean, meta: Omit<ImportMeta, 'id' | 'at' | 'files' | 'skipped'>) => {
     let rows: Row[] = [], added = 0, score = 0
     await changeSources(project.id, (cur, p) => {
-      const { ds: next, rows: r } = ingest(cur, incoming)
+      const { ds: next, rows: r } = ingest(cur, incoming, wrapped)
       rows = r
       added = r.filter(x => x.status !== 'skipped').length
       if (!added) return null
@@ -98,7 +56,7 @@ export default function Sources({ project, ds }: { project: Project; ds: Dataset
           incoming.push(...read, ...skip)
         } else incoming.push({ path: rel, data })
       }
-      await commit(incoming, { kind: zips.length ? 'zip' : 'files', fileName: zips[0] ?? (all.length === 1 ? all[0].name : `${all.length} files`) })
+      await commit(incoming, true, { kind: zips.length ? 'zip' : 'files', fileName: zips[0] ?? (all.length === 1 ? all[0].name : `${all.length} files`) })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally { setBusy(false) }
@@ -107,7 +65,7 @@ export default function Sources({ project, ds }: { project: Project; ds: Dataset
   const addPaste = async () => {
     const name = pasteName.trim() || 'kernel.cu'
     if (!paste.trim()) { setError('Paste some code first.'); return }
-    await commit([{ path: name, data: new TextEncoder().encode(paste) }], { kind: isDepsFile(name) ? 'deps' : 'paste', fileName: name })
+    await commit([{ path: name, data: new TextEncoder().encode(paste) }], false, { kind: isDepsFile(name) ? 'deps' : 'paste', fileName: name })
     setPaste('')
   }
 

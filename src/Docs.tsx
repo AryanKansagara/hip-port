@@ -27,8 +27,8 @@ export default function Docs() {
         <p>For a large Python project with a few extensions, zip just the kernel sources:</p>
         <Code label="shell" code={"git ls-files '*.cu' '*.cuh' 'csrc/*' 'requirements*.txt' | zip my-kernels.zip -@"} />
         <h3>Single kernels</h3>
-        <p>Paste into <b>Paste code</b> on the Sources tab and give it a file name ending in <code>.cu</code>. Re-importing a path replaces the old copy, and each import saves a dated scan to History.</p>
-        <p>Zips are read with the browser&rsquo;s built-in decompressor. Stored and deflate entries work; Zip64 (archives over 4 GB) and encrypted zips do not.</p>
+        <p>Paste into <b>Paste code</b> on the Sources tab and give it a file name ending in <code>.cu</code>. The name can include folders (<code>src/reduce.cu</code>). Re-importing a path replaces the old copy, and each import saves a dated scan to History.</p>
+        <p>A folder that wraps a whole zip or picked folder (<code>my-repo-main/</code>) is left out of the paths, unless it is a usual source folder such as <code>src</code> or the project already has files in it. Zips are read with the browser&rsquo;s built-in decompressor. Stored and deflate entries work; Zip64 (archives over 4 GB) and encrypted zips do not.</p>
 
         <h2 id="python">Python dependencies</h2>
         <p>Upload the file your environment is actually built from. If you only have a working environment, export it:</p>

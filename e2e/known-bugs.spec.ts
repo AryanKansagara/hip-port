@@ -180,11 +180,20 @@ test('#9 undoing a removed source does not replace a newer copy of it', async ({
   expect(await translated(page)).toContain('newer();')
 })
 
-test.fail('#10 pasting a file with a folder keeps the folder', async ({ page }) => {
+test('#10 pasting a file with a folder keeps the folder', async ({ page }) => {
   await project(page, [{ name: 'util.h', data: 'int root;\n' }])
   await tab(page, 'Sources')
   await paste(page, 'src/util.h', 'int nested;\n')
   await expect(page.locator('.src-list li .mono')).toHaveText(['src/util.h', 'util.h'], { timeout: 5000 })
+})
+
+test('#10 a pasted path replaces the file at that path, and a zip of one source folder keeps it', async ({ page }) => {
+  await newProject(page)
+  await importFiles(page, [{ name: 'repo.zip', data: zip([{ path: 'repo-main/src/reduce.cu', data: 'cudaFree(p);\n' }, { path: 'repo-main/util.h', data: 'int root;\n' }]) }], 2)
+  await paste(page, 'src/reduce.cu', 'cudaFree(q);\n')
+  await expect(reportRow(page, 'src/reduce.cu')).toContainText('replaced', { timeout: 5000 })
+  await importFiles(page, [{ name: 'src.zip', data: zip([{ path: 'src/util.h', data: 'int nested;\n' }]) }], 1)
+  await expect(page.locator('.src-list li .mono')).toHaveText(['src/reduce.cu', 'src/util.h', 'util.h'], { timeout: 5000 })
 })
 
 test.fail('#11 a project without any CUDA shows no coverage and no clean-kernel checks', async ({ page }) => {
