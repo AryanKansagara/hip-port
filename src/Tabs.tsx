@@ -201,9 +201,11 @@ function Worklist({ project, r, update }: TabProps) {
     (show === 'all' || (show === 'open' ? !status[i.key] : !!status[i.key])) &&
     (!qText || (i.title + i.file + i.detail).toLowerCase().includes(qText.toLowerCase())))
   const setStatus = (k: string, s: ItemStatus | 'open') => {
-    const next = { ...status }
-    if (s === 'open') delete next[k]; else next[k] = s
-    update({ status: next })
+    update(p => {
+      const next = { ...p.status }
+      if (s === 'open') delete next[k]; else next[k] = s
+      return { status: next }
+    })
   }
   const done = Object.keys(status).filter(k => r.items.some(i => i.key === k)).length
   return (
@@ -306,9 +308,9 @@ function History({ project, r, update }: TabProps) {
     </Empty>
   )
   const remove = (s: ScanSnapshot) => {
-    const prev = project.snapshots
-    update({ snapshots: prev.filter(x => x.id !== s.id) })
-    toast(`Deleted “${s.label}”`, { undo: () => update({ snapshots: prev }) })
+    update(p => ({ snapshots: p.snapshots.filter(x => x.id !== s.id) }))
+    // Back to its place by date, next to whatever was saved or deleted since.
+    toast(`Deleted “${s.label}”`, { undo: () => update(p => ({ snapshots: [...p.snapshots.filter(x => x.id !== s.id), s].sort((x, y) => x.at - y.at) })) })
   }
   return (
     <div className="stack">
