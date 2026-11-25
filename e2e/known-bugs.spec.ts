@@ -9,7 +9,7 @@ const rocm = async (page: import('@playwright/test').Page, name: string, text: s
   return out.split('\n').slice(2).filter(Boolean)
 }
 
-test.fail('#2 a comma inside template arguments does not split a call argument', async ({ page }) => {
+test('#2 a comma inside template arguments does not split a call argument', async ({ page }) => {
   await project(page, [{ name: 'k.cu', data: `${RT}cudaFuncSetAttribute(kern<float, 4>, cudaFuncAttributeMaxDynamicSharedMemorySize, n);\nk<<<div_up<int, 8>(n), 256>>>(x);\n` }])
   await useGgl(page)
   await tab(page, 'Files & diff')

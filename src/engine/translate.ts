@@ -28,7 +28,7 @@ export interface TranslateOptions {
   defined?: Set<string>
 }
 
-interface Edit { start: number; end: number; text: string }
+interface Edit { start: number; end: number; text: string; /** Deletes a whole argument */ drop?: true }
 
 // A name with no mapping is reported as unmapped only when it is shaped like an API use: a
 // camel-case call or _t type with a CUDA library prefix, or an upper-case constant that is not
@@ -128,6 +128,9 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
     const fix = mp.hip ? HOST_FIX[mp.hip] : undefined
     if (fix) hostFix(m.code, src, at + id.length, fix, edits)
   }
+  // Names inside an argument HIP does not take go with it.
+  const drops = edits.filter(e => e.drop)
+  for (let i = edits.length - 1; i >= 0; i--) if (!edits[i].drop && drops.some(d => edits[i].start >= d.start && edits[i].end <= d.end)) edits.splice(i, 1)
   // `using namespace cub;` has no :: after the name.
   for (const x of m.code.matchAll(/\busing\s+namespace\s+(cub)\s*;/g)) {
     const at = x.index! + x[0].lastIndexOf('cub')
@@ -178,10 +181,8 @@ function hostFix(code: string, src: string, nameEnd: number, [idx, action, wrapp
   const lead = a.text.length - a.text.trimStart().length
   const start = p + 1 + a.start + lead, end = p + 1 + a.start + a.text.trimEnd().length
   if (action === 'drop') {
-    // Take the preceding comma with it; renames inside the dropped argument go too.
-    const from = p + 1 + a.start - (idx > 0 ? 1 : 0)
-    for (let i = edits.length - 1; i >= 0; i--) if (edits[i].start >= from && edits[i].end <= end) edits.splice(i, 1)
-    edits.push({ start: from, end: p + 1 + a.start + a.text.length, text: '' })
+    // Take the preceding comma with it.
+    edits.push({ start: p + 1 + a.start - (idx > 0 ? 1 : 0), end: p + 1 + a.start + a.text.length, text: '', drop: true })
   } else if (!src.slice(start, end).startsWith(wrapper)) {
     edits.push({ start, end: start, text: wrapper + '(' }, { start: end, end, text: ')' })
   }
