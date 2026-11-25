@@ -37,7 +37,7 @@ test.fail('#4 the usual spellings of a 32-lane assumption are found', async ({ p
   await expect(page.locator('.diff .mark.critical')).toHaveCount(lines.length, { timeout: 5000 })
 })
 
-test.fail('#5 requirements-rocm.txt keeps markers, git URLs, hashes and other indexes, and stays installable', async ({ page }) => {
+test('#5 requirements-rocm.txt keeps markers, git URLs, hashes and other indexes, and stays installable', async ({ page }) => {
   expect(await rocm(page, 'requirements.txt', `--extra-index-url https://pypi.example.test/simple
 peft @ git+https://github.com/huggingface/peft.git@v0.13.0
 git+https://github.com/x/y.git@v1#egg=mylib
@@ -58,7 +58,7 @@ jax[cuda12]==0.4.30
   ])
 })
 
-test.fail('#5 a conda environment becomes lines pip accepts', async ({ page }) => {
+test('#5 a conda environment becomes lines pip accepts', async ({ page }) => {
   expect(await rocm(page, 'environment.yml', `dependencies:
   - python=3.11
   - pytorch=2.3.0=py3.11_cuda12.1_cudnn8.9.2_0

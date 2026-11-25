@@ -75,6 +75,12 @@ export interface Dep {
   cudaLocal?: string
   /** Set when the requirement is a direct wheel or archive URL */
   url?: string
+  /** Environment marker after `;`, such as sys_platform == "linux" */
+  marker?: string
+  /** VCS, local or editable requirement, copied as written */
+  verbatim?: string
+  /** Per-requirement pip options such as --hash */
+  options?: string
 }
 
 export interface DepsResult {
@@ -82,6 +88,8 @@ export interface DepsResult {
   deps: Dep[]
   /** --index-url / --extra-index-url lines pointing at CUDA wheels */
   cudaIndexes: { line: number; url: string }[]
+  /** Other indexes and find-links locations, kept in the rewritten file */
+  indexes: { option: string; url: string }[]
   /** conda channels that only make sense for CUDA */
   cudaChannels: string[]
   errors: { line: number; message: string }[]
@@ -112,14 +120,25 @@ function classify(name: string, spec: string, line: number, raw: string, source:
 }
 
 export function parseRequirements(text: string): DepsResult {
-  const r: DepsResult = { kind: 'requirements', deps: [], cudaIndexes: [], cudaChannels: [], errors: [] }
-  text.split(/\r?\n/).forEach((rawLine, i) => {
-    const line = i + 1
-    const s = rawLine.replace(/\s+#.*$/, '').replace(/^#.*$/, '').trim()
+  const r: DepsResult = { kind: 'requirements', deps: [], cudaIndexes: [], indexes: [], cudaChannels: [], errors: [] }
+  logicalLines(text).forEach(({ line, text: rawLine }) => {
+    const s = rawLine.replace(/\s+#.*$/, '').replace(/^\s*#.*$/, '').trim()
     if (!s) return
-    const idx = s.match(/^(?:-i|--index-url|--extra-index-url|-f|--find-links)\s*=?\s*(\S+)/)
-    if (idx) { if (/\/cu\d+|nvidia|cuda/i.test(idx[1])) r.cudaIndexes.push({ line, url: idx[1] }); return }
+    const idx = s.match(/^(-i|--index-url|--extra-index-url|-f|--find-links)\s*=?\s*(\S+)/)
+    if (idx) {
+      const url = withoutCredentials(idx[2])
+      if (/\/cu\d+|nvidia|cuda/i.test(url)) r.cudaIndexes.push({ line, url })
+      // Any other download.pytorch.org location is replaced by the ROCm index.
+      else if (!/\/\/download\.pytorch\.org\//.test(url)) r.indexes.push({ option: idx[1] === '-f' ? '--find-links' : /^--(?:extra|find)/.test(idx[1]) ? idx[1] : '--index-url', url })
+      return
+    }
     if (/^-[rc]\s|^--requirement|^--constraint/.test(s)) { r.errors.push({ line, message: `Includes another file (${s}); upload it too to check its packages.` }); return }
+    const editable = s.match(/^(?:-e|--editable)[\s=]+(.+)$/)
+    if (editable) {
+      const named = editable[1].match(/[#&]egg=([\w.-]+)/)
+      r.deps.push({ ...classify(named?.[1] ?? editable[1].replace(/^git\+/, ''), 'editable', line, rawLine, 'pip'), verbatim: withoutCredentials(s) })
+      return
+    }
     if (/^-/.test(s)) return
     // Direct wheel / archive URL, bare or as "name @ url". The package name comes from the file
     // name, and a cuNNN path segment or +cuNNN local version marks a CUDA build.
@@ -127,25 +146,49 @@ export function parseRequirements(text: string): DepsResult {
     if (direct && !/^git\+/.test(direct[2]) && !/#egg=/.test(s)) {
       const fileName = decodeURIComponent(direct[2].split(/[?#]/)[0].split('/').pop() ?? '')
       const name = direct[1] ?? fileName.match(/^([A-Za-z0-9][A-Za-z0-9._]*?)-\d/)?.[1]
-      if (!name) { r.errors.push({ line, message: `Could not tell which package “${direct[2]}” installs` }); return }
+      if (!name) { r.errors.push({ line, message: `Could not tell which package “${withoutCredentials(direct[2])}” installs` }); return }
       const d = classify(name, '@ url', line, rawLine, 'pip')
       d.url = direct[2]
+      d.marker = markerOf(s)
       d.cudaLocal = decodeURIComponent(direct[2]).match(/[/+](cu\d{2,3})(?=[/.\-_]|$)/)?.[1]
       r.deps.push(d)
       return
     }
     const egg = s.match(/#egg=([\w.-]+)/) ?? s.match(/^([\w.-]+)\s*@\s*\S+/)
-    if (egg) { r.deps.push(classify(egg[1], s.includes('@') ? '@ url' : 'git', line, rawLine, 'pip')); return }
+    if (egg) { r.deps.push({ ...classify(egg[1], s.includes('@') ? '@ url' : 'git', line, rawLine, 'pip'), verbatim: withoutCredentials(s) }); return }
+    if (/^(?:git|hg|svn|bzr)\+/.test(s)) { r.deps.push({ ...classify(s.split(/[@#]/)[0].split('/').pop()!.replace(/\.git$/, ''), 'git', line, rawLine, 'pip'), verbatim: withoutCredentials(s) }); return }
     const m = s.match(/^([A-Za-z0-9][\w.-]*)\s*(\[[^\]]*\])?\s*([^;]*)/)
-    if (!m) { r.errors.push({ line, message: `Could not read “${s}”` }); return }
-    r.deps.push(classify(m[1], (m[2] ?? '') + m[3].trim(), line, rawLine, 'pip'))
+    if (!m) { r.errors.push({ line, message: `Could not read “${withoutCredentials(s)}”` }); return }
+    const options = s.match(/(?:\s+--[a-z][\w-]*[=\s]\S+)+$/)?.[0].trim()
+    const spec = options ? m[3].replace(options, '') : m[3]
+    r.deps.push({ ...classify(m[1], (m[2] ?? '') + spec.trim(), line, rawLine, 'pip'), marker: markerOf(s), options })
   })
   return r
 }
 
+/** Joins backslash continuations (pip-compile puts each --hash on its own line). Comment lines never continue. */
+function logicalLines(text: string): { line: number; text: string }[] {
+  const out: { line: number; text: string }[] = []
+  let open = false
+  text.split(/\r?\n/).forEach((raw, i) => {
+    const cont = /\\\s*$/.test(raw) && !/^\s*#/.test(raw)
+    const part = cont ? raw.replace(/\s*\\\s*$/, '') : raw
+    if (open) out[out.length - 1].text += ' ' + part.trim()
+    else out.push({ line: i + 1, text: part })
+    open = cont
+  })
+  return out
+}
+
+/** The marker after a `;`, up to a pip option such as --hash. A URL needs a space before the `;`. */
+const markerOf = (s: string) => s.match(/(?:^[^:]*|\s);\s*(.+?)(?=\s+--\w|$)/)?.[1]
+
+/** user:password@ in a URL is never shown or written to the rewritten file. */
+const withoutCredentials = (s: string) => s.replace(/(:\/\/)[^/\s@]+@/g, (all, p) => /^:\/\/(?:git|\$\{\w+\}(?::\$\{\w+\})?)@$/.test(all) ? all : p)
+
 /** environment.yml: channels, conda dependencies, and the nested pip: list. Indentation-based, no YAML library. */
 export function parseCondaEnv(text: string): DepsResult {
-  const r: DepsResult = { kind: 'conda', deps: [], cudaIndexes: [], cudaChannels: [], errors: [] }
+  const r: DepsResult = { kind: 'conda', deps: [], cudaIndexes: [], indexes: [], cudaChannels: [], errors: [] }
   let section = ''
   let pipIndent = -1
   text.split(/\r?\n/).forEach((rawLine, i) => {
@@ -166,6 +209,7 @@ export function parseCondaEnv(text: string): DepsResult {
       const sub = parseRequirements(v)
       for (const d of sub.deps) r.deps.push({ ...d, line, raw: rawLine, source: 'pip' })
       for (const x of sub.cudaIndexes) r.cudaIndexes.push({ ...x, line })
+      r.indexes.push(...sub.indexes)
       return
     }
     const m = v.match(/^(?:[\w-]+::)?([A-Za-z0-9][\w.-]*)\s*(.*)$/)
@@ -177,21 +221,49 @@ export function parseCondaEnv(text: string): DepsResult {
 
 export const parseDeps = (name: string, text: string) => /\.ya?ml$/i.test(name) || /^\s*dependencies\s*:/m.test(text) ? parseCondaEnv(text) : parseRequirements(text)
 
+/** conda's match spec as pip writes it: the build string goes, `numpy 1.26.*` gets its ==, and one `=` is a prefix match. Null when pip has no such form. */
+function condaSpec(spec: string): string | null {
+  const s = spec.trim()
+  if (!s || /^=*\s*\*$/.test(s)) return ''
+  const exact = s.match(/^==\s*([\w.!+]+)(?:=\S+|\s+\S+)?$/)
+  if (exact) return '==' + exact[1].replace(/\+cu\d+/, '')
+  const fuzzy = s.match(/^=\s*([\w.!]*\w)(\+\w+)?(\.?\*)?(=\S+)?$/)
+  if (fuzzy) return `==${fuzzy[1]}${!fuzzy[2] && (fuzzy[3] || (!fuzzy[4] && /^[\d.]+$/.test(fuzzy[1]))) ? '.*' : ''}`
+  const bare = s.match(/^(\d[\w.!]*(?:\.\*)?)(?:[\s=]+\S+)?$/)
+  if (bare) return `==${bare[1]}`
+  return /^(?:[<>!~=]=?|~=)/.test(s) && !/[|[\]]/.test(s) && !/^=[^=]/.test(s) ? s : null
+}
+
+/** jax[cuda12] and friends pull the CUDA build back in. */
+const withoutCudaExtras = (spec: string) => spec.replace(/^\[([^\]]*)\]/, (_, l: string) => {
+  const keep = l.split(',').map(x => x.trim()).filter(x => x && !/^(?:cuda\d*(?:[-_]\w+)*|cu\d+)$/i.test(x))
+  return keep.length ? `[${keep.join(',')}]` : ''
+})
+
+const unreadable = (d: Dep) => `# check ${d.name}: the conda spec ${d.spec} has no pip form.`
+
 /** A requirements file rewritten for ROCm: CUDA indexes swapped, CUDA-only packages removed or replaced, notes as comments. */
 export function rocmRequirements(r: DepsResult): string {
   const out: string[] = [`# Rewritten for ROCm by HIP Port. Package table checked 2026-10; verify versions against your ROCm release.`, `--extra-index-url ${ROCM_INDEX}`]
+  for (const x of r.indexes) out.push(`${x.option} ${x.url}`)
   for (const d of r.deps) {
-    if (d.source !== 'pip' && r.kind === 'conda' && ['pytorch', 'pytorch-cuda', 'cudatoolkit', 'cuda-toolkit', 'cuda-nvcc', 'cudnn'].includes(normName(d.name))) {
-      if (normName(d.name) === 'pytorch') out.push(`torch${d.spec.replace(/^=+/, '==').replace(/\+cu\d+/, '')}`)
-      else out.push(`# removed ${d.name}: ${d.action}`)
-      continue
+    const marker = d.marker ? ` ; ${d.marker}` : ''
+    if (d.source !== 'pip' && r.kind === 'conda') {
+      const n = normName(d.name)
+      if (n === 'python') { out.push('# removed python: set by the environment, not installed with pip.'); continue }
+      if (n === 'pytorch') { out.push(condaSpec(d.spec) === null ? unreadable(d) : `torch${condaSpec(d.spec)}`); continue }
+      if (['pytorch-cuda', 'cudatoolkit', 'cuda-toolkit', 'cuda-nvcc', 'cudnn'].includes(n)) { out.push(`# removed ${d.name}: ${d.action}`); continue }
     }
     const k = knownFor(d.name)
     if (d.url && d.cudaLocal && (!k || k.replace === undefined)) { out.push(`# removed ${d.name}: the pinned wheel is a ${d.cudaLocal} build. ${k?.action ?? 'Install a ROCm build or build from source.'}`); continue }
-    if (d.url && !(k && k.replace !== undefined)) { out.push(d.raw.trim()); continue }
-    if (k && k.replace !== undefined) { out.push(k.replace ? k.replace : `# removed ${d.name}: ${k.action}`); continue }
-    const spec = d.spec.replace(/\+cu\d+/, '').replace(/^=(?!=)/, '==')
-    out.push(`${d.name}${spec}${d.status === 'partial' || d.status === 'fork' ? `  # ${d.action}` : ''}`)
+    if (d.url && !(k && k.replace !== undefined)) { out.push(withoutCredentials(d.raw.trim())); continue }
+    if (k && k.replace !== undefined) { out.push(k.replace ? k.replace + (k.replace.startsWith('#') ? '' : marker) : `# removed ${d.name}: ${k.action}`); continue }
+    if (d.verbatim) { out.push(d.verbatim); continue }
+    const spec = d.source === 'conda' || /^=[^=]/.test(d.spec) ? condaSpec(d.spec) : withoutCudaExtras(d.spec).replace(/\+cu\d+/, '')
+    if (spec === null) { out.push(unreadable(d)); continue }
+    // A hash of the CUDA wheel cannot match the ROCm one.
+    const options = !d.options || d.cudaLocal || d.status === 'rocm' ? '' : ' ' + d.options
+    out.push(`${d.name}${spec}${marker}${options}${d.status === 'partial' || d.status === 'fork' ? `  # ${d.action}` : ''}`)
   }
   return out.join('\n') + '\n'
 }
