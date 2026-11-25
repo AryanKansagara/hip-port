@@ -91,11 +91,14 @@ test('#6 conda flow lists, quoted entries and nested pip problems are read or re
   await expect(page.getByText('Conda channel nvidia only serves CUDA packages.')).toBeVisible({ timeout: 5000 })
 })
 
-test.fail('#7 a package pinned twice keeps its worst severity', async ({ page }) => {
+test('#7 a package pinned twice keeps its worst severity', async ({ page }) => {
   // torch+cu121 is high (5): 100*e^-0.05 = 95.12 -> 95. The darwin line alone would be low (0.4).
   await project(page, [{ name: 'requirements.txt', data: 'torch==2.1.0 ; sys_platform == "darwin"\ntorch==2.3.1+cu121 ; sys_platform == "linux"\n' }])
   await expect(kpi(page, 'Readiness').locator('b')).toHaveText('95/100', { timeout: 5000 })
   await expect(check(page, 'Install torch from the ROCm wheel index')).toHaveClass('todo', { timeout: 5000 })
+  await expect(check(page, 'Install torch from the ROCm wheel index')).toContainText('Line 2 pins a CUDA build (+cu121)')
+  await tab(page, 'Worklist')
+  await expect(page.locator('table.worklist tbody tr')).toHaveText([/torch pinned to cu121.*requirements\.txt:2/])
 })
 
 for (const [what, file, message] of [
