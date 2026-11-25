@@ -1,4 +1,4 @@
-// Real defects found while writing this suite. Each is pinned with test.fail until its issue is fixed.
+// Real defects found while writing this suite. Pin a new one with test.fail until its issue is fixed.
 import { test, expect, newProject, project, importFiles, upload, paste, reportRow, tab, zip, kpi, check, setTarget, useGgl, worklistRow, translated, download, downloadBytes, unzip } from './fixtures.ts'
 
 const RT = '#include <hip/hip_runtime.h>\n'
@@ -353,7 +353,7 @@ test('#14 a remark is shown in the report of a long import', async ({ page }) =>
   await expect(reportRow(page, 'z.cu')).toContainText('Windows-1252', { timeout: 5000 })
 })
 
-test.fail('#15 replacing a large file does not count it twice towards the project limit', async ({ page }) => {
+test('#15 replacing a large file does not count it twice towards the project limit', async ({ page }) => {
   test.slow()
   await newProject(page)
   // 14 files of 0.9 MB = 12.6 MB, imported twice: 12.6 MB of the 25 MB limit, not 25.2 MB.
