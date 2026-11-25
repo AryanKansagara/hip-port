@@ -1,6 +1,7 @@
 // Turns imported files into project sources: what is kept, what is skipped and why.
 import type { Dataset } from '../store.ts'
 import { decodeSource } from './decode.ts'
+import { cleanPath } from './paths.ts'
 import { isDepsFile, isSource, unclosedRemark } from './scan.ts'
 
 export const MAX_FILE = 1_000_000
@@ -14,9 +15,9 @@ export interface Row { path: string; status: 'added' | 'replaced' | 'skipped'; r
 const LAYOUT_DIRS = /^(src|source|sources|csrc|cuda|gpu|kernels?|include|includes|inc|lib|libs|common|core|utils?|tests?|examples?|samples?|benchmarks?|apps?|tools|third_party|external)$/i
 
 /** Length of the shared top-level folder (repo-main/...) that zips of GitHub repos and picked folders carry, or 0. */
-function wrapperLength(ds: Dataset, incoming: Incoming[]): number {
-  const top = incoming[0]?.path.split('/')[0]
-  if (!top || !incoming.every(f => f.path.startsWith(top + '/'))) return 0
+function wrapperLength(ds: Dataset, paths: string[]): number {
+  const top = paths[0]?.split('/')[0]
+  if (!top || !paths.every(p => p.startsWith(top + '/'))) return 0
   return LAYOUT_DIRS.test(top) || ds.files.some(f => f.path.startsWith(top + '/')) ? 0 : top.length + 1
 }
 
@@ -38,10 +39,12 @@ export function ingest(ds: Dataset, incoming: Incoming[], wrapped: boolean): { d
   const files = [...ds.files]
   let deps = ds.deps
   const rows: Row[] = []
-  const strip = wrapped ? wrapperLength(ds, incoming) : 0
+  const entries = incoming.map(f => ({ ...f, clean: cleanPath(f.path) }))
+  const strip = wrapped ? wrapperLength(ds, entries.flatMap(f => f.clean ?? [])) : 0
   let total = files.reduce((s, f) => s + f.text.length, 0)
-  for (const f of incoming) {
-    const path = f.path.slice(strip)
+  for (const f of entries) {
+    if (f.clean === null) { rows.push({ path: f.path, status: 'skipped', reason: 'Path leads out of the project folder' }); continue }
+    const path = f.clean.slice(strip)
     // A path someone typed is wanted wherever it is.
     if (wrapped && SKIP_DIRS.test(path)) { rows.push({ path, status: 'skipped', reason: 'Build, VCS or environment folder' }); continue }
     const src = isSource(path), dep = isDepsFile(path)
