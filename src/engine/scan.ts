@@ -167,10 +167,10 @@ export function workItems(files: FileResult[], deps: DepsResult | null, depsPath
     const unread = unreadDeps(deps)
     if (unread) out.push({ key: `dependency|${depsPath}|unread`, severity: deps.deps.length ? 'medium' : 'high', category: 'dependency', file: depsPath, line: deps.errors[0]?.line ?? 0, title: unread, detail: deps.errors[0]?.message ?? '', fix: 'Check that this is the dependency file your environment is built from, or fix the lines listed on the Python tab.' })
   }
-  // One row per key: a package listed once per platform marker is still one thing to fix.
+  // One row per key, the most severe: a package listed once per platform marker is still one thing to fix.
+  out.sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity) || a.file.localeCompare(b.file) || a.line - b.line)
   const keys = new Set<string>()
-  const unique = out.filter(i => !keys.has(i.key) && keys.add(i.key))
-  return unique.sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity) || a.file.localeCompare(b.file) || a.line - b.line)
+  return out.filter(i => !keys.has(i.key) && keys.add(i.key))
 }
 
 /** What keeps the dependency checks from being conclusive, or null. */
@@ -193,10 +193,11 @@ function checklist(files: FileResult[], deps: DepsResult | null, t: Target): Che
   const out: CheckItem[] = []
   const has = (rule: string) => files.some(f => f.hazards.some(h => h.rule === rule))
   const uses = (name: string) => files.some(f => f.uses.some(u => u.cuda === name))
-  const dep = (n: string) => deps?.deps.find(d => d.name.toLowerCase().replace(/_/g, '-') === n)
 
   const unread = deps ? unreadDeps(deps) : null
-  const torch = dep('torch') ?? dep('pytorch')
+  // Every entry counts: one line per platform marker, or conda's pytorch next to pip's torch.
+  const torches = deps?.deps.filter(d => /^(py)?torch$/i.test(d.name)) ?? []
+  const torch = torches.find(d => d.cudaLocal) ?? torches.find(d => d.source === 'conda') ?? torches[0]
   if (!deps) out.push({ id: 'torch', state: 'info', title: 'Add requirements.txt or environment.yml', detail: 'Upload your Python dependency file to check torch, attention libraries and quantization packages.' })
   else if (!torch) out.push({ id: 'torch', state: 'info', title: 'torch not listed', detail: 'No torch dependency found. If it comes from a base image, use rocm/pytorch.' })
   else {
