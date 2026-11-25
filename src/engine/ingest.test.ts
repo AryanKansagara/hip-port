@@ -26,3 +26,25 @@ test('a wrapper folder is dropped; a folder that is part of the layout is not', 
   assert.deepEqual(after({ files: [{ path: 'solver/k.cu', text: '' }], deps: null }, 'solver/u.h'), ['solver/k.cu', 'solver/u.h'])
   assert.deepEqual(ingest(none, [], true).rows, [])
 })
+
+test('replacing a file counts the difference; the limit still applies to new content', () => {
+  const files = (n: number, text: string) => Array.from({ length: n }, (_, i) => file(`f${i}.cu`, text))
+  const big = 'x'.repeat(900_000)
+  const first = ingest(none, files(27, big), false) // 24.3 MB
+  assert.ok(first.rows.every(r => r.status === 'added'))
+  assert.ok(ingest(first.ds, files(27, big), false).rows.every(r => r.status === 'replaced'))
+  assert.ok(ingest(first.ds, files(27, 'y'), false).rows.every(r => r.status === 'replaced'))
+  assert.match(ingest(first.ds, [file('new.cu', big)], false).rows[0].reason!, /limit/)
+  // A replacement that grows past the limit keeps the old copy.
+  const grown = ingest(first.ds, files(27, 'x'.repeat(999_999)), false)
+  assert.equal(grown.rows.filter(r => r.status === 'replaced').length, 7)
+  assert.ok(grown.ds.files.reduce((s, f) => s + f.text.length, 0) <= 25_000_000)
+  // The same path twice in one import is one file.
+  assert.equal(ingest(first.ds, [file('n.cu', 'x'.repeat(600_000)), file('n.cu', 'x'.repeat(600_000))], false).rows[1].status, 'replaced')
+  // Dependency files count too, and replacing one counts the difference.
+  const dep = ingest(first.ds, [file('requirements.txt', '#'.repeat(690_000))], false)
+  assert.equal(ingest(dep.ds, [file('environment.yml', '#'.repeat(690_000))], false).rows[0].status, 'replaced')
+  assert.equal(ingest(dep.ds, [file('new.cu', 'x'.repeat(20_000))], false).rows[0].status, 'skipped')
+  // Stored size counts, not bytes: é is two bytes and one character.
+  assert.equal(ingest(first.ds, [file('é.cu', 'é'.repeat(450_000))], false).rows[0].status, 'added')
+})

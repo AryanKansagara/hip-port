@@ -41,7 +41,8 @@ export function ingest(ds: Dataset, incoming: Incoming[], wrapped: boolean): { d
   const rows: Row[] = []
   const entries = incoming.map(f => ({ ...f, clean: cleanPath(f.path) }))
   const strip = wrapped ? wrapperLength(ds, entries.flatMap(f => f.clean ?? [])) : 0
-  let total = files.reduce((s, f) => s + f.text.length, 0)
+  // Counted as stored, dependency file included.
+  let total = files.reduce((s, f) => s + f.text.length, deps?.text.length ?? 0)
   for (const f of entries) {
     if (f.clean === null) { rows.push({ path: f.path, status: 'skipped', reason: 'Path leads out of the project folder' }); continue }
     const path = f.clean.slice(strip)
@@ -54,10 +55,13 @@ export function ingest(ds: Dataset, incoming: Incoming[], wrapped: boolean): { d
     if (!f.data.length) { rows.push({ path, status: 'skipped', reason: 'Empty file' }); continue }
     const { text: raw, remark } = decodeSource(f.data)
     if (raw === undefined) { rows.push({ path, status: 'skipped', reason: remark }); continue }
-    if (total + f.data.length > MAX_TOTAL) { rows.push({ path, status: 'skipped', reason: 'Project size limit (25 MB) reached' }); continue }
     const text = raw.replace(/\r\n/g, '\n')
     if (isHtml(text)) { rows.push({ path, status: 'skipped', reason: 'HTML page, not source code; download the raw file' }); continue }
-    total += text.length
+    // Only the difference to the copy this one replaces counts; shrinking a file is always allowed.
+    const i = dep ? -1 : files.findIndex(x => x.path === path)
+    const grow = text.length - ((dep ? deps : files[i])?.text.length ?? 0)
+    if (grow > 0 && total + grow > MAX_TOTAL) { rows.push({ path, status: 'skipped', reason: 'Project size limit (25 MB) reached' }); continue }
+    total += grow
     const lines = text.split('\n').length
     if (dep) {
       rows.push({ path, status: deps ? 'replaced' : 'added', lines, reason: [deps && deps.path !== path ? `Replaces ${deps.path}` : '', remark].filter(Boolean).join('. ') || undefined })
@@ -65,7 +69,6 @@ export function ingest(ds: Dataset, incoming: Incoming[], wrapped: boolean): { d
       continue
     }
     const remarks = [remark, unclosedRemark(text)].filter(Boolean).join('. ') || undefined
-    const i = files.findIndex(x => x.path === path)
     if (i >= 0) { files[i] = { path, text }; rows.push({ path, status: 'replaced', lines, reason: remarks }) }
     else { files.push({ path, text }); rows.push({ path, status: 'added', lines, reason: remarks }) }
   }
