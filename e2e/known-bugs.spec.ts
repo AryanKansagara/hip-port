@@ -19,7 +19,7 @@ test('#2 a comma inside template arguments does not split a call argument', asyn
   ])
 })
 
-test.fail('#3 FP8 types follow the target: OCP on gfx950 and gfx1201, FNUZ on gfx942', async ({ page }) => {
+test('#3 FP8 types follow the target: OCP on gfx950 and gfx1201, FNUZ on gfx942', async ({ page }) => {
   await project(page, [{ name: 'k.cu', data: `${RT}__nv_fp8_e4m3 a; __nv_fp8x2_e5m2 b;\n` }])
   await tab(page, 'Files & diff')
   const line = async () => (await translated(page)).split('\n')[1]
