@@ -13,7 +13,7 @@ const SKIP_DIRS = /(^|\/)(\.git|node_modules|build|dist|__pycache__|\.venv|venv)
 export interface Row { path: string; status: 'added' | 'replaced' | 'skipped'; reason?: string; lines?: number }
 
 /** Classifies incoming files and merges them into the dataset. Pure apart from TextDecoder. */
-export function ingest(ds: Dataset, incoming: { path: string; data: Uint8Array }[]): { ds: Dataset; rows: Row[] } {
+export function ingest(ds: Dataset, incoming: { path: string; data: Uint8Array; size?: number }[]): { ds: Dataset; rows: Row[] } {
   const files = [...ds.files]
   let deps = ds.deps
   const rows: Row[] = []
@@ -27,7 +27,8 @@ export function ingest(ds: Dataset, incoming: { path: string; data: Uint8Array }
     if (SKIP_DIRS.test(path)) { rows.push({ path, status: 'skipped', reason: 'Build, VCS or environment folder' }); continue }
     const src = isSource(path), dep = isDepsFile(path)
     if (!src && !dep) { rows.push({ path, status: 'skipped', reason: `Not a CUDA/C++ source or dependency file (${path.includes('.') ? '.' + path.split('.').pop() : 'no extension'})` }); continue }
-    if (f.data.length > MAX_FILE) { rows.push({ path, status: 'skipped', reason: `Larger than 1 MB (${(f.data.length / 1e6).toFixed(1)} MB); likely generated` }); continue }
+    const size = f.size ?? f.data.length
+    if (size > MAX_FILE) { rows.push({ path, status: 'skipped', reason: `Larger than 1 MB (${(size / 1e6).toFixed(1)} MB); likely generated` }); continue }
     if (!f.data.length) { rows.push({ path, status: 'skipped', reason: 'Empty file' }); continue }
     if (f.data.subarray(0, 4096).includes(0)) { rows.push({ path, status: 'skipped', reason: 'Binary content' }); continue }
     if (total + f.data.length > MAX_TOTAL) { rows.push({ path, status: 'skipped', reason: 'Project size limit (25 MB) reached' }); continue }
@@ -73,9 +74,10 @@ export default function Sources({ project, ds, update }: { project: Project; ds:
   const handleFiles = async (list: FileList | File[]) => {
     // Copy first: the input's FileList is live and empties when its value is reset.
     const all = Array.from(list)
-    setBusy(true); setError(null)
+    setBusy(true); setError(null); setRows(null)
     try {
-      const incoming: { path: string; data: Uint8Array }[] = []
+      // Entries an import skips anyway are listed without being decompressed; `size` is what the zip declares.
+      const incoming: { path: string; data: Uint8Array; size?: number }[] = []
       const zips: string[] = []
       for (const f of all) {
         const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name
@@ -83,7 +85,10 @@ export default function Sources({ project, ds, update }: { project: Project; ds:
         if (/\.zip$/i.test(f.name)) {
           zips.push(f.name)
           if (data.length > 200_000_000) throw new Error(`${f.name} is larger than 200 MB. Zip just the source folders.`)
-          incoming.push(...(await readZip(data)).map(e => ({ path: e.path, data: e.data })))
+          const wanted = (p: string, size: number) => (isSource(p) || isDepsFile(p)) && size <= MAX_FILE && !SKIP_DIRS.test(p.slice(p.indexOf('/') + 1))
+          const skip: typeof incoming = []
+          const read = await readZip(data, wanted, (path, size) => skip.push({ path, data: new Uint8Array(0), size }))
+          incoming.push(...read, ...skip)
         } else incoming.push({ path: rel, data })
       }
       const { ds: next, rows: r } = ingest(ds, incoming)

@@ -101,7 +101,7 @@ for (const [what, file, message] of [
   ['a damaged entry', { path: 'a/k.cu', data: 'cudaMalloc(&p, 4);\n', stored: true, crc: 1 }, /k\.cu.*damaged/],
   ['an encrypted entry', { path: 'a/k.cu', data: 'cudaMalloc(&p, 4);\n', stored: true, flags: 1 }, /k\.cu.*encrypted/],
 ] as const) {
-  test.fail(`#8 a zip with ${what} is refused`, async ({ page }) => {
+  test(`#8 a zip with ${what} is refused`, async ({ page }) => {
     await newProject(page)
     await upload(page, [{ name: 'x.zip', data: zip([file]) }])
     await expect(page.getByRole('alert')).toHaveText(message, { timeout: 5000 })
@@ -109,7 +109,7 @@ for (const [what, file, message] of [
   })
 }
 
-test.fail('#8 an unreadable entry the import would skip anyway does not block the rest', async ({ page }) => {
+test('#8 an unreadable entry the import would skip anyway does not block the rest', async ({ page }) => {
   await newProject(page)
   await upload(page, [{ name: 'x.zip', data: zip([{ path: 'a/k.cu', data: 'cudaMalloc(&p, 4);\n' }, { path: 'a/weights.bin', data: 'x', stored: true, method: 93 }]) }])
   await expect(page.locator('.src-list li .mono')).toHaveText(['k.cu'], { timeout: 5000 })
