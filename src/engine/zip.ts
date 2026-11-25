@@ -6,12 +6,27 @@ export interface ZipEntry { path: string; data: Uint8Array }
 const u16 = (b: Uint8Array, o: number) => b[o] | (b[o + 1] << 8)
 const u32 = (b: Uint8Array, o: number) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0
 
-async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw'))
-  return new Uint8Array(await new Response(stream).arrayBuffer())
+/** Inflates at most `limit` bytes, so a small entry cannot expand without end. */
+async function inflateRaw(data: Uint8Array, limit: number): Promise<Uint8Array> {
+  const reader = new Blob([data as BlobPart]).stream().pipeThrough(new DecompressionStream('deflate-raw')).getReader()
+  const out = new Uint8Array(limit)
+  let n = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (n + value.length > limit) { void reader.cancel(); throw new Error('larger than declared') }
+    out.set(value, n)
+    n += value.length
+  }
+  return out.subarray(0, n)
 }
 
-export async function readZip(buf: Uint8Array, filter: (path: string) => boolean = () => true): Promise<ZipEntry[]> {
+/**
+ * Reads the entries `filter` accepts. Every one is checked against the size and CRC-32 the archive
+ * records; an encrypted, damaged or unreadable entry rejects the archive by name. Entries the filter
+ * refuses are never decompressed and are passed to `skipped`.
+ */
+export async function readZip(buf: Uint8Array, filter: (path: string, size: number) => boolean = () => true, skipped: (path: string, size: number) => void = () => {}): Promise<ZipEntry[]> {
   // End of central directory record: scan back over a possible comment.
   let eocd = -1
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 65535); i--) {
@@ -24,20 +39,28 @@ export async function readZip(buf: Uint8Array, filter: (path: string) => boolean
   const dec = new TextDecoder()
   const out: ZipEntry[] = []
   for (let n = 0; n < count; n++) {
-    if (u32(buf, p) !== 0x02014b50) throw new Error('Corrupt zip central directory.')
+    if (p + 46 > buf.length || u32(buf, p) !== 0x02014b50) throw new Error('Corrupt zip central directory.')
+    const flags = u16(buf, p + 8)
     const method = u16(buf, p + 10)
-    const csize = u32(buf, p + 20)
+    const crc = u32(buf, p + 16)
+    const csize = u32(buf, p + 20), size = u32(buf, p + 24)
     const nameLen = u16(buf, p + 28), extraLen = u16(buf, p + 30), commentLen = u16(buf, p + 32)
     const local = u32(buf, p + 42)
     const path = dec.decode(buf.subarray(p + 46, p + 46 + nameLen))
     p += 46 + nameLen + extraLen + commentLen
-    if (path.endsWith('/') || !filter(path)) continue
-    const lname = u16(buf, local + 26), lextra = u16(buf, local + 28)
-    const start = local + 30 + lname + lextra
+    if (path.endsWith('/')) continue
+    if (!filter(path, size)) { skipped(path, size); continue }
+    if (flags & 1) throw new Error(`${path} is encrypted. Zip the sources without a password.`)
+    if (method !== 0 && method !== 8) throw new Error(`${path}: unsupported compression method ${method}.`)
+    const damaged = new Error(`${path} is damaged in this zip. Zip the sources again.`)
+    if (local + 30 > buf.length || u32(buf, local) !== 0x04034b50) throw damaged
+    const start = local + 30 + u16(buf, local + 26) + u16(buf, local + 28)
+    if (start + csize > buf.length || (method === 0 && csize !== size)) throw damaged
     const raw = buf.subarray(start, start + csize)
-    if (method === 0) out.push({ path, data: raw.slice() })
-    else if (method === 8) out.push({ path, data: await inflateRaw(raw) })
-    else throw new Error(`${path}: unsupported compression method ${method}.`)
+    let data: Uint8Array
+    try { data = method === 0 ? raw.slice() : await inflateRaw(raw, size) } catch { throw damaged }
+    if (data.length !== size || crc32(data) !== crc) throw damaged
+    out.push({ path, data })
   }
   return out
 }
