@@ -196,17 +196,27 @@ test('#10 a pasted path replaces the file at that path, and a zip of one source 
   await expect(page.locator('.src-list li .mono')).toHaveText(['src/reduce.cu', 'src/util.h', 'util.h'], { timeout: 5000 })
 })
 
-test.fail('#11 a project without any CUDA shows no coverage and no clean-kernel checks', async ({ page }) => {
+test('#11 a project without any CUDA shows no coverage and no clean-kernel checks', async ({ page }) => {
   await project(page, [{ name: 'requirements.txt', data: 'numpy\n' }])
   await expect(kpi(page, 'API coverage').locator('b')).toHaveText('—', { timeout: 5000 })
   await expect(check(page, /wavefront-size clean/)).not.toHaveClass('pass', { timeout: 5000 })
+  await expect(check(page, /device-side launches/)).not.toHaveClass('pass')
+  await expect(page.locator('.proj-title')).toContainText('— API coverage')
+  await tab(page, 'History')
+  await expect(page.locator('table.data tbody tr td').nth(4)).toHaveText('—')
 })
 
-test.fail('#11 an HTML page or a cut-off source saved as .cu is called out', async ({ page }) => {
+test('#11 an HTML page or a cut-off source saved as .cu is called out', async ({ page }) => {
   await newProject(page)
-  await importFiles(page, [{ name: 'page.cu', data: '<!doctype html>\n<html><body>Sign in</body></html>\n' }, { name: 'cut.cu', data: 'cudaMalloc(&p, 4);\n/* the rest of this file was lost\n' }], 2)
+  await importFiles(page, [{ name: 'page.cu', data: '<!doctype html>\n<html><body>Sign in</body></html>\n' }, { name: 'cut.cu', data: 'cudaMalloc(&p, 4);\n/* the rest of this file was lost\n' }], 1, 1)
   await expect(reportRow(page, 'page.cu')).toContainText(/HTML/, { timeout: 5000 })
+  await expect(reportRow(page, 'page.cu')).toContainText('skipped')
   await expect(reportRow(page, 'cut.cu')).toContainText(/comment/, { timeout: 5000 })
+  await tab(page, 'Overview')
+  for (const c of [/wavefront-size clean/, /device-side launches/]) {
+    await expect(check(page, c)).toHaveClass('info')
+    await expect(check(page, c)).toContainText('cut.cu ends inside a comment opened on line 2')
+  }
 })
 
 test.fail('#12 a file name cannot become a spreadsheet formula', async ({ page }) => {
