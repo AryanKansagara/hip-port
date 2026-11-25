@@ -28,6 +28,10 @@ interface Rule {
 
 const all = (re: RegExp, s: string) => [...s.matchAll(re)].map(x => ({ at: x.index! }))
 
+// 32 as people write it: decimal or hex, with an integer suffix.
+const SUF = '(?:[uU][lL]{0,2}|[lL]{1,2}[uU]?)?'
+const N32 = `(?:32|0[xX]20)${SUF}`
+
 export const RULES: Rule[] = [
   {
     id: 'warp-size-32',
@@ -35,10 +39,11 @@ export const RULES: Rule[] = [
     sev: ['critical', 'low'],
     find: m => {
       const out: { at: number }[] = []
-      for (const x of m.code.matchAll(/#\s*define\s+(\w*(?:WARP|warp|Warp)\w*)\s+32\b/g)) out.push({ at: x.index! })
-      for (const x of m.code.matchAll(/\b(?:const|constexpr)\s+(?:static\s+)?(?:unsigned\s+|signed\s+)?\w+\s+\w*[Ww]arp\w*\s*=\s*32\b/g)) out.push({ at: x.index! })
+      for (const x of m.code.matchAll(new RegExp(String.raw`#[ \t]*define[ \t]+\w*(?:WARP|[Ww]arp)\w*[ \t]+(?:\([ \t]*${N32}[ \t]*\)|${N32})(?![\w.])`, 'g'))) out.push({ at: x.index! })
+      for (const x of m.code.matchAll(new RegExp(String.raw`\b(?:const|constexpr)\s+(?:\w+(?:::\w+)*\s+){1,5}\w*(?:WARP|[Ww]arp)\w*\s*(?:=\s*${N32}|\{\s*${N32}\s*\}|=\s*\(\s*${N32}\s*\))(?![\w.])`, 'g'))) out.push({ at: x.index! })
+      for (const x of m.code.matchAll(new RegExp(String.raw`\benum\b[^;{}]{0,120}\{[^;{}]{0,4000}?\b(\w*(?:WARP|[Ww]arp)\w*\s*=\s*${N32})(?![\w.])`, 'g'))) out.push({ at: x.index! + x[0].length - x[1].length })
       // Lane and warp index arithmetic: tid % 32, tid / 32, tid & 31, tid >> 5
-      for (const x of m.code.matchAll(/\b(?:threadIdx\.[xyz]|\w*(?:tid|lane|Lane|idx|Idx|thread)\w*)\s*(?:%\s*32|\/\s*32|&\s*31|>>\s*5)\b/g)) out.push({ at: x.index! })
+      for (const x of m.code.matchAll(new RegExp(String.raw`\b(?:threadIdx\.[xyz]|\w*(?:tid|lane|Lane|idx|Idx|thread)\w*)\s*(?:[%/]\s*${N32}|&\s*(?:31|0[xX]1[fF])${SUF}|>>\s*5${SUF})(?![\w.])`, 'g'))) out.push({ at: x.index! })
       return out
     },
     message: 'Assumes 32 threads per warp. AMD Instinct GPUs run 64-wide wavefronts, so lane and warp indices computed this way are wrong.',
@@ -50,7 +55,7 @@ export const RULES: Rule[] = [
     sev: ['critical', 'low'],
     find: (m) => {
       const out: { at: number }[] = []
-      for (const x of m.code.matchAll(/for\s*\(\s*(?:int|unsigned|auto)?\s*\w+\s*=\s*16\s*;[^;]*;[^)]*(?:>>=\s*1|\/=\s*2)\s*\)/g)) {
+      for (const x of m.code.matchAll(/for\s*\(\s*(?:\w+(?:::\w+)*\s+){0,3}(\w+)\s*(?:=\s*|\{\s*)(?:16|0[xX]10)(?:[uU][lL]{0,2}|[lL]{1,2}[uU]?)?\s*\}?\s*;[^;]*;[^)]*?(?:>>=\s*1|\/=\s*2|\b\1\s*=\s*\1\s*(?:>>\s*1|\/\s*2))[uU]?\s*\)/g)) {
         const window = m.code.slice(x.index!, x.index! + 300)
         if (/__shfl/.test(window)) out.push({ at: x.index! })
       }
