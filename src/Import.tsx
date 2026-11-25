@@ -4,8 +4,8 @@ import { isDepsFile, isSource, scan, snapshotOf, type SourceFile } from './engin
 import { readZip } from './engine/zip.ts'
 import { resolver } from './Project.tsx'
 import { sampleData } from './projectData.ts'
-import { changeSources, putData, saveProject, uuid, type Dataset, type ImportMeta, type Project } from './store.ts'
-import { go, Link, toast } from './ui.tsx'
+import { changeSources, saveProject, uuid, type Dataset, type ImportMeta, type Project } from './store.ts'
+import { go, Link, toast, toastError } from './ui.tsx'
 
 export default function Sources({ project, ds }: { project: Project; ds: Dataset }) {
   const [rows, setRows] = useState<Row[] | null>(null)
@@ -31,9 +31,10 @@ export default function Sources({ project, ds }: { project: Project; ds: Dataset
       return { ds: next, patch: { dataMissing: false, snapshots: [...p.snapshots, snap], imports: [...p.imports, { ...meta, id: uuid(), at: Date.now(), files: added, skipped: r.length - added }] } }
     })
     setRows(rows)
-    if (!added) { setError('Nothing was imported. See the reasons below.'); return }
+    if (!added) { setError('Nothing was imported. See the reasons below.'); return false }
     setError(null)
     toast(`Imported ${added} file${added > 1 ? 's' : ''}. Readiness ${score}.`, { tone: 'ok', action: { label: 'See overview', run: () => go(`/app/p/${project.id}`) } })
+    return true
   }
 
   const handleFiles = async (list: FileList | File[]) => {
@@ -65,8 +66,11 @@ export default function Sources({ project, ds }: { project: Project; ds: Dataset
   const addPaste = async () => {
     const name = pasteName.trim() || 'kernel.cu'
     if (!paste.trim()) { setError('Paste some code first.'); return }
-    await commit([{ path: name, data: new TextEncoder().encode(paste) }], false, { kind: isDepsFile(name) ? 'deps' : 'paste', fileName: name })
-    setPaste('')
+    setRows(null)
+    try {
+      // Code that was not imported stays in the box.
+      if (await commit([{ path: name, data: new TextEncoder().encode(paste) }], false, { kind: isDepsFile(name) ? 'deps' : 'paste', fileName: name })) setPaste('')
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
   }
 
   const remove = async (path: string) => {
@@ -75,10 +79,12 @@ export default function Sources({ project, ds }: { project: Project; ds: Dataset
     if (!file) return
     // A log entry also tells the project view to reload its sources.
     const log = (fileName: string) => ({ id: uuid(), kind: 'remove' as const, fileName, files: 1, skipped: 0, at: Date.now() })
-    await changeSources(project.id, (cur, p) => ({
-      ds: dep ? { ...cur, deps: cur.deps?.path === path ? null : cur.deps } : { ...cur, files: cur.files.filter(f => f.path !== path) },
-      patch: { imports: [...p.imports, log(path)] },
-    }))
+    try {
+      await changeSources(project.id, (cur, p) => ({
+        ds: dep ? { ...cur, deps: cur.deps?.path === path ? null : cur.deps } : { ...cur, files: cur.files.filter(f => f.path !== path) },
+        patch: { imports: [...p.imports, log(path)] },
+      }))
+    } catch (e) { toastError(e); return }
     // Only this file comes back, and only if nothing has been imported in its place since.
     const restore = () => changeSources(project.id, (cur, p) => {
       if (dep ? cur.deps : cur.files.some(f => f.path === path)) return null
@@ -87,16 +93,19 @@ export default function Sources({ project, ds }: { project: Project; ds: Dataset
         patch: { imports: [...p.imports, log(`${path} (restored)`)] },
       }
     })
-    toast(`Removed ${path}`, { undo: () => void restore() })
+    toast(`Removed ${path}`, { undo: () => void restore().catch(toastError) })
   }
 
   const makeCopy = async () => {
     const d = sampleData(project.sampleId!)!
     const now = Date.now()
-    const p = await saveProject({ ...project, id: uuid(), name: `${project.name} (editable copy)`, sampleId: undefined, createdAt: now, snapshots: [...project.snapshots], status: { ...project.status }, imports: [] })
-    await putData(p.id, d)
-    await saveProject({ ...p, imports: [{ id: uuid(), kind: 'sample', fileName: 'copy of synthetic sample', files: d.files.length + (d.deps ? 1 : 0), skipped: 0, at: now }] })
-    go(`/app/p/${p.id}/sources`)
+    try {
+      const p = await saveProject({
+        ...project, id: uuid(), name: `${project.name} (editable copy)`, sampleId: undefined, createdAt: now, snapshots: [...project.snapshots], status: { ...project.status },
+        imports: [{ id: uuid(), kind: 'sample', fileName: 'copy of synthetic sample', files: d.files.length + (d.deps ? 1 : 0), skipped: 0, at: now }],
+      }, { ds: d })
+      go(`/app/p/${p.id}/sources`)
+    } catch (e) { toastError(e) }
   }
 
   if (project.sampleId) return (

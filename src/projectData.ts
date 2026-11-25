@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { SAMPLES } from './engine/sample.ts'
 import { isDepsFile, scan, snapshotOf, type ScanResult } from './engine/scan.ts'
 import { changeProject, getData, getDefaults, getProjects, saveProject, useProjects, uuid, type Dataset, type Project } from './store.ts'
+import { toastError } from './ui.tsx'
 
 export function sampleData(id: string): Dataset | null {
   const s = SAMPLES.find(x => x.id === id)
@@ -37,8 +38,8 @@ export async function createBlankProject(name: string): Promise<Project> {
   return saveProject({ id: uuid(), name, createdAt: now, updatedAt: now, target: d.target, ggl: d.ggl, status: {}, snapshots: [], imports: [] })
 }
 
-/** Changes the project as it is when the change runs. Pass a function when the new value depends on the old one. */
-export type Update = (change: Partial<Project> | ((p: Project) => Partial<Project>)) => void
+/** Changes the project as it is when the change runs. Pass a function when the new value depends on the old one. False when the browser could not store it, which is shown. */
+export type Update = (change: Partial<Project> | ((p: Project) => Partial<Project>)) => Promise<boolean>
 
 export function useProject(id: string) {
   const list = useProjects()
@@ -49,10 +50,10 @@ export function useProject(id: string) {
     if (!project) return
     let live = true
     if (project.sampleId) { setDs(sampleData(project.sampleId) ?? { files: [], deps: null }); return }
-    void getData(project.id).then(d => { if (live) setDs(d ?? { files: [], deps: null }) })
+    void getData(project.id).catch(e => { toastError(e); return undefined }).then(d => { if (live) setDs(d ?? { files: [], deps: null }) })
     return () => { live = false }
   }, [project?.id, project?.sampleId, importsKey])
-  const update: Update = change => { void changeProject(id, typeof change === 'function' ? change : () => change) }
+  const update: Update = change => changeProject(id, typeof change === 'function' ? change : () => change).then(() => true, e => { toastError(e); return false })
   return { loading: list === null || (project !== null && ds === null), project, ds, update }
 }
 

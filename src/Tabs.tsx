@@ -307,10 +307,10 @@ function History({ project, r, update }: TabProps) {
       <button type="button" className="btn primary" onClick={() => saveScan(project, r, update)}>Save this scan</button>
     </Empty>
   )
-  const remove = (s: ScanSnapshot) => {
-    update(p => ({ snapshots: p.snapshots.filter(x => x.id !== s.id) }))
+  const remove = async (s: ScanSnapshot) => {
+    if (!await update(p => ({ snapshots: p.snapshots.filter(x => x.id !== s.id) }))) return
     // Back to its place by date, next to whatever was saved or deleted since.
-    toast(`Deleted “${s.label}”`, { undo: () => update(p => ({ snapshots: [...p.snapshots.filter(x => x.id !== s.id), s].sort((x, y) => x.at - y.at) })) })
+    toast(`Deleted “${s.label}”`, { undo: () => void update(p => ({ snapshots: [...p.snapshots.filter(x => x.id !== s.id), s].sort((x, y) => x.at - y.at) })) })
   }
   return (
     <div className="stack">
@@ -339,7 +339,7 @@ function History({ project, r, update }: TabProps) {
             <td><b>{s.label}</b></td><td>{new Date(s.at).toLocaleString()}</td><td className="mono">{s.target}</td><td className="num">{s.files}</td><td className="num">{fmtPct(coveragePct(s.coverage))}</td>
             {SEVERITIES.map(k => <td key={k} className="num">{s.counts[k]}</td>)}
             <td className="num"><b>{s.score}</b></td>
-            <td><button type="button" className="btn danger-ghost sm" onClick={() => remove(s)} aria-label={`Delete ${s.label}`}>Delete</button></td>
+            <td><button type="button" className="btn danger-ghost sm" onClick={() => void remove(s)} aria-label={`Delete ${s.label}`}>Delete</button></td>
           </tr>
         ))}</tbody>
       </table></div>

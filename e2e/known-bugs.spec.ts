@@ -225,12 +225,91 @@ test.fail('#12 zip paths cannot climb out of the folder they are unpacked in', a
   expect(Object.keys(unzip(bytes)).filter((p) => p.split('/').includes('..'))).toEqual([])
 })
 
-test.fail('#13 an import the browser refuses to store says so', async ({ page }) => {
+test('#13 an import the browser refuses to store says so', async ({ page }) => {
   await newProject(page)
   await page.evaluate(() => { IDBObjectStore.prototype.put = () => { throw new DOMException('full', 'QuotaExceededError') } })
   await upload(page, [{ name: 'k.cu', data: 'int lane = threadIdx.x % 32;\n' }])
   await expect(page.getByRole('alert')).toContainText(/stor/i, { timeout: 5000 })
   await expect(page.locator('.toast', { hasText: 'Imported 1 file' })).toHaveCount(0)
+})
+
+/** Every write succeeds as a request, then its transaction is aborted, as when the disk fills at commit. */
+const failCommits = (page: import('@playwright/test').Page) => page.evaluate(() => {
+  const put = IDBObjectStore.prototype.put
+  IDBObjectStore.prototype.put = function (...a) {
+    const r = put.apply(this, a)
+    r.addEventListener('success', () => { try { this.transaction.abort() } catch { /* already aborted */ } })
+    return r
+  }
+})
+
+test('#13 a write that fails at commit keeps the previous sources, the paste and the history', async ({ page }) => {
+  await newProject(page)
+  await importFiles(page, [{ name: 'k.cu', data: 'cudaFree(old);\n' }], 1)
+  await failCommits(page)
+  await upload(page, [{ name: 'k.cu', data: 'cudaFree(newer);\n' }, { name: 'n.cu', data: 'int n;\n' }])
+  await expect(page.getByRole('alert')).toContainText(/store/, { timeout: 5000 })
+  await paste(page, 'p.cu', 'int pasted;\n')
+  await expect(page.getByRole('alert')).toContainText(/store/)
+  await expect(page.getByLabel('Contents')).toHaveValue('int pasted;\n')
+  await page.getByRole('button', { name: 'Remove k.cu' }).click()
+  await expect(page.locator('.toast.error')).toContainText(/store/)
+  await page.reload()
+  await expect(page.locator('.src-list li .mono')).toHaveText(['k.cu'])
+  await expect(page.locator('.log li')).toHaveCount(1)
+  await tab(page, 'Files & diff')
+  expect(await translated(page)).toContain('old')
+})
+
+test('#13 a status, a scan, a target or a deletion that is not stored is not shown as done', async ({ page }) => {
+  await project(page, [{ name: 'k.cu', data: 'int lane = threadIdx.x % 32;\n' }])
+  await tab(page, 'Worklist')
+  await failCommits(page)
+  // Each failure is shown once, then dismissed so the next one is told apart.
+  const failed = async () => {
+    await expect(page.locator('.toast.error')).toContainText(/store/, { timeout: 5000 })
+    await page.locator('.toast.error').getByRole('button', { name: 'Dismiss' }).click()
+    await expect(page.locator('.toast.error')).toHaveCount(0)
+  }
+  await worklistRow(page, 'warp size').getByRole('combobox').selectOption('done')
+  await failed()
+  await expect(page.getByText('0 of 1 resolved')).toBeVisible()
+  await page.getByRole('button', { name: 'Save scan' }).first().click()
+  await failed()
+  await expect(page.locator('.toast', { hasText: 'Saved' })).toHaveCount(0)
+  await page.getByLabel('Target GPU').selectOption('gfx1201')
+  await failed()
+  await expect(page.getByLabel('Target GPU')).toHaveValue('gfx942')
+  await page.evaluate(() => { IDBObjectStore.prototype.delete = () => { throw new DOMException('no', 'UnknownError') } })
+  await page.getByRole('link', { name: 'Projects' }).last().click()
+  await page.getByRole('button', { name: 'Delete' }).click()
+  await page.getByRole('button', { name: 'Delete project' }).click()
+  await expect(page.locator('.toast.error', { hasText: 'UnknownError' })).toBeVisible()
+  await expect(page.locator('.project-card')).toHaveCount(1)
+  await page.getByRole('button', { name: 'New project' }).click()
+  await expect(page.locator('.project-card')).toHaveCount(1)
+  await page.goto('/app?sample=mini-repo')
+  await expect(page.locator('h1')).toContainText('Synthetic CUDA mini-repo')
+})
+
+test('#13 a sample that cannot be stored leaves the workspace usable', async ({ page }) => {
+  await page.goto('/app')
+  await failCommits(page)
+  await page.getByRole('button', { name: /Synthetic LLM serving kernels/ }).click()
+  await expect(page.locator('.toast.error')).toContainText(/store/, { timeout: 5000 })
+  await expect(page.getByRole('heading', { name: 'Projects' })).toBeVisible()
+})
+
+test('#13 without IndexedDB the project still works in memory', async ({ page }) => {
+  await page.addInitScript(() => { IDBFactory.prototype.open = () => { throw new DOMException('private', 'SecurityError') } })
+  await project(page, [{ name: 'k.cu', data: 'int lane = threadIdx.x % 32;\n' }])
+  await tab(page, 'Worklist')
+  await worklistRow(page, 'warp size').getByRole('combobox').selectOption('done')
+  await expect(page.getByText('1 of 1 resolved')).toBeVisible()
+  await tab(page, 'Sources')
+  await page.getByRole('button', { name: 'Remove k.cu' }).click()
+  await page.locator('.toast', { hasText: 'Removed k.cu' }).getByRole('button', { name: 'Undo' }).click()
+  await expect(page.locator('.src-list li')).toHaveCount(1)
 })
 
 test.fail('#14 a Latin-1 source is not exported with its bytes replaced', async ({ page }) => {

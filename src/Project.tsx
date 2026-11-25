@@ -22,10 +22,10 @@ export interface TabProps {
 
 export const resolver = (p: Project) => (k: string) => !!p.status[k]
 
-export function saveScan(project: Project, r: ScanResult, update: Update, label?: string) {
+export async function saveScan(project: Project, r: ScanResult, update: Update, label?: string) {
   const snap = snapshotOf(r, uuid(), label ?? `Scan ${project.snapshots.length + 1}`, Date.now(), resolver(project))
-  update(p => ({ snapshots: [...p.snapshots, snap] }))
-  toast(`Saved “${snap.label}”: readiness ${snap.score}`, { tone: 'ok', undo: () => update(p => ({ snapshots: p.snapshots.filter(s => s.id !== snap.id) })) })
+  if (!await update(p => ({ snapshots: [...p.snapshots, snap] }))) return
+  toast(`Saved “${snap.label}”: readiness ${snap.score}`, { tone: 'ok', undo: () => void update(p => ({ snapshots: p.snapshots.filter(s => s.id !== snap.id) })) })
 }
 
 export function downloadZip(project: Project, r: ScanResult) {
@@ -53,7 +53,7 @@ export default function ProjectView({ id, tab: rawTab }: { id: string; tab: stri
       const n = Number(e.key)
       if (n >= 1 && n <= TABS.length) { e.preventDefault(); setTab(TABS[n - 1][0]) }
       else if (e.key === '?') setHelp(true)
-      else if (e.key === 's' && r) saveScan(project, r, update)
+      else if (e.key === 's' && r) void saveScan(project, r, update)
       else if (e.key === 'p' && r) go(`/app/p/${id}/report`)
       else if (e.key === 'd' && r) downloadZip(project, r)
     }
