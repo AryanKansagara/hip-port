@@ -3,12 +3,14 @@ import { SAMPLES } from './engine/sample.ts'
 import { createBlankProject, createSampleProject } from './projectData.ts'
 import { deleteProject, saveProject, useProjects, type Project } from './store.ts'
 import { useSync } from './sync.ts'
-import { ask, go, Link, SyntheticBadge, toast } from './ui.tsx'
+import { ask, go, Link, SyntheticBadge, toast, toastError } from './ui.tsx'
 
 export default function Workspace() {
   const list = useProjects()
   const sync = useSync()
   const [busy, setBusy] = useState<string | null>(null)
+
+  const failed = (e: unknown) => { setBusy(null); toastError(e) }
 
   // /app?sample=mini-repo opens (or creates) the sample straight away.
   useEffect(() => {
@@ -18,13 +20,15 @@ export default function Workspace() {
     if (!s || list === null || busy) return
     if (!SAMPLES.some(x => x.id === s)) return
     setBusy(s)
-    void createSampleProject(s).then(p => go(`/app/p/${p.id}${tab ? '/' + tab : ''}`, { replace: true }))
+    void createSampleProject(s).then(p => go(`/app/p/${p.id}${tab ? '/' + tab : ''}`, { replace: true }), e => { go('/app', { replace: true }); failed(e) })
   }, [list, busy])
 
-  const openSample = async (id: string) => { setBusy(id); const p = await createSampleProject(id); go(`/app/p/${p.id}`) }
+  const openSample = async (id: string) => { setBusy(id); try { const p = await createSampleProject(id); go(`/app/p/${p.id}`) } catch (e) { failed(e) } }
   const newProject = async () => {
-    const p = await createBlankProject(`Port ${(list?.filter(p => !p.sampleId).length ?? 0) + 1}`)
-    go(`/app/p/${p.id}/sources`)
+    try {
+      const p = await createBlankProject(`Port ${(list?.filter(p => !p.sampleId).length ?? 0) + 1}`)
+      go(`/app/p/${p.id}/sources`)
+    } catch (e) { failed(e) }
   }
 
   if (list === null || busy) return <div className="boot" role="status"><span className="spinner" /> {busy ? 'Scanning the synthetic sample' : 'Opening your projects'}</div>
@@ -86,7 +90,7 @@ function ProjectCard({ p }: { p: Project }) {
     <article className="project-card">
       <div className="row between">
         {renaming ? (
-          <form onSubmit={e => { e.preventDefault(); const v = String(new FormData(e.currentTarget).get('n')).trim(); if (v) void saveProject({ ...p, name: v }); setRenaming(false) }}>
+          <form onSubmit={e => { e.preventDefault(); const v = String(new FormData(e.currentTarget).get('n')).trim(); if (v) saveProject({ ...p, name: v }).catch(toastError); setRenaming(false) }}>
             <input name="n" defaultValue={p.name} autoFocus aria-label="Project name" onBlur={e => e.currentTarget.form?.requestSubmit()} />
           </form>
         ) : <h3><Link href={`/app/p/${p.id}`}>{p.name}</Link></h3>}
@@ -105,8 +109,10 @@ function ProjectCard({ p }: { p: Project }) {
           <button type="button" className="btn ghost sm" onClick={() => setRenaming(true)}>Rename</button>
           <button type="button" className="btn danger-ghost sm" onClick={async () => {
             if (!(await ask(`Delete “${p.name}”?`, 'Removes the project, its sources and its scan history from this device (and the cloud, if you are signed in). You can undo for a few seconds.', 'Delete project'))) return
-            const undo = await deleteProject(p.id)
-            toast(`Deleted ${p.name}`, { undo: () => void undo() })
+            try {
+              const undo = await deleteProject(p.id)
+              toast(`Deleted ${p.name}`, { undo: () => void undo().catch(toastError) })
+            } catch (e) { toastError(e) }
           }}>Delete</button>
         </div>
       </div>

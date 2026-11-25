@@ -114,6 +114,9 @@ export function Toasts() {
   )
 }
 
+/** Shows why a change was not stored. */
+export const toastError = (e: unknown) => toast(e instanceof Error ? e.message : String(e), { tone: 'error', ttl: 8000 })
+
 export const isTyping = (e: KeyboardEvent) => {
   const el = e.target as HTMLElement | null
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)

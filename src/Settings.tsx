@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { TARGETS } from './engine/gfx.ts'
 import { deleteProject, getDefaults, getProjects, setDefaults, type Defaults } from './store.ts'
 import { exportAll, RAW_SYNC_LIMIT, useSync } from './sync.ts'
-import { ask, download, setTheme, toast, useDark } from './ui.tsx'
+import { ask, download, setTheme, toast, toastError, useDark } from './ui.tsx'
 
 export default function Settings() {
   const [d, setD] = useState<Defaults>(getDefaults)
@@ -39,13 +39,17 @@ export default function Settings() {
         <h2>Your data</h2>
         <p>Projects live in this browser (IndexedDB). {sync.user ? <>Signed in as <b>{sync.user.email}</b>: settings, worklist status, scan history and source trees under {(RAW_SYNC_LIMIT / 1e6).toFixed(1)} MB per project sync to your account. Larger trees stay on this device.</> : 'Sign in from the account menu (top right) to sync across devices. It is optional.'}</p>
         <div className="row gap wrap">
-          <button type="button" className="btn ghost" onClick={async () => download(`hip-port-export-${new Date().toISOString().slice(0, 10)}.json`, await exportAll())}>Export all my data (JSON)</button>
+          <button type="button" className="btn ghost" onClick={async () => { try { download(`hip-port-export-${new Date().toISOString().slice(0, 10)}.json`, await exportAll()) } catch (e) { toastError(e) } }}>Export all my data (JSON)</button>
           <button type="button" className="btn danger-ghost" onClick={async () => {
             const list = getProjects()
             if (!list.length) { toast('Nothing to delete'); return }
             if (!(await ask('Delete all local projects?', `Removes ${list.length} project${list.length > 1 ? 's' : ''} from this browser${sync.user ? ' and from your cloud account' : ''}. You can undo for a few seconds.`, 'Delete everything'))) return
-            const undos = await Promise.all(list.map(p => deleteProject(p.id)))
-            toast(`Deleted ${list.length} projects`, { undo: () => { for (const u of undos) void u() } })
+            // Each project is deleted or kept on its own, so the ones that went can still be restored.
+            const done = await Promise.allSettled(list.map(p => deleteProject(p.id)))
+            const undos = done.flatMap(d => d.status === 'fulfilled' ? [d.value] : [])
+            if (undos.length) toast(`Deleted ${undos.length} projects`, { undo: () => { for (const u of undos) void u().catch(toastError) } })
+            const failed = done.find(d => d.status === 'rejected')
+            if (failed) toastError(failed.reason)
           }}>Delete all projects</button>
         </div>
       </div>
