@@ -1,5 +1,6 @@
 // Turns imported files into project sources: what is kept, what is skipped and why.
 import type { Dataset } from '../store.ts'
+import { decodeSource } from './decode.ts'
 import { isDepsFile, isSource } from './scan.ts'
 
 export const MAX_FILE = 1_000_000
@@ -26,7 +27,6 @@ export function ingest(ds: Dataset, incoming: Incoming[], wrapped: boolean): { d
   const rows: Row[] = []
   const strip = wrapped ? wrapperLength(ds, incoming) : 0
   let total = files.reduce((s, f) => s + f.text.length, 0)
-  const dec = new TextDecoder('utf-8', { fatal: false })
   for (const f of incoming) {
     const path = f.path.slice(strip)
     // A path someone typed is wanted wherever it is.
@@ -36,19 +36,20 @@ export function ingest(ds: Dataset, incoming: Incoming[], wrapped: boolean): { d
     const size = f.size ?? f.data.length
     if (size > MAX_FILE) { rows.push({ path, status: 'skipped', reason: `Larger than 1 MB (${(size / 1e6).toFixed(1)} MB); likely generated` }); continue }
     if (!f.data.length) { rows.push({ path, status: 'skipped', reason: 'Empty file' }); continue }
-    if (f.data.subarray(0, 4096).includes(0)) { rows.push({ path, status: 'skipped', reason: 'Binary content' }); continue }
+    const { text: raw, remark } = decodeSource(f.data)
+    if (raw === undefined) { rows.push({ path, status: 'skipped', reason: remark }); continue }
     if (total + f.data.length > MAX_TOTAL) { rows.push({ path, status: 'skipped', reason: 'Project size limit (25 MB) reached' }); continue }
-    const text = dec.decode(f.data).replace(/\r\n/g, '\n')
+    const text = raw.replace(/\r\n/g, '\n')
     total += text.length
     const lines = text.split('\n').length
     if (dep) {
-      rows.push({ path, status: deps ? 'replaced' : 'added', lines, reason: deps && deps.path !== path ? `Replaces ${deps.path}` : undefined })
+      rows.push({ path, status: deps ? 'replaced' : 'added', lines, reason: [deps && deps.path !== path ? `Replaces ${deps.path}` : '', remark].filter(Boolean).join('. ') || undefined })
       deps = { path, text }
       continue
     }
     const i = files.findIndex(x => x.path === path)
-    if (i >= 0) { files[i] = { path, text }; rows.push({ path, status: 'replaced', lines }) }
-    else { files.push({ path, text }); rows.push({ path, status: 'added', lines }) }
+    if (i >= 0) { files[i] = { path, text }; rows.push({ path, status: 'replaced', lines, reason: remark }) }
+    else { files.push({ path, text }); rows.push({ path, status: 'added', lines, reason: remark }) }
   }
   files.sort((a, b) => a.path.localeCompare(b.path))
   return { ds: { files, deps }, rows }
