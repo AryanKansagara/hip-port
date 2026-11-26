@@ -87,6 +87,27 @@ export function matchBracket(code: string, open: number): number {
   return -1
 }
 
+/**
+ * Index of the `>` closing the template argument list opened at `open`, or -1 when the `<` reads as
+ * a comparison or shift. Without types this is a judgement: the `<` must touch an identifier, the
+ * contents must not hold an operator no template argument list has at its top level, and what
+ * follows must be able to follow a template-id (so `a < b, c > d` stays two arguments).
+ */
+function templateEnd(s: string, open: number, depthLeft = 8): number {
+  if (!depthLeft || s[open + 1] === '<' || s[open + 1] === '=' || !/(?:^|[^\w.>]|[^-]>)[A-Za-z_]\w*$/.test(s.slice(Math.max(0, open - 128), open))) return -1
+  let depth = 0
+  for (let i = open + 1; i < s.length && i < open + 1000; i++) {
+    const c = s[i]
+    if (c === '(' || c === '[' || c === '{') depth++
+    else if (c === ')' || c === ']' || c === '}') { if (--depth < 0) return -1 }
+    else if (depth) continue
+    else if (c === '<') { const e = templateEnd(s, i, depthLeft - 1); if (e < 0) return -1; i = e }
+    else if (c === '>' && s[i - 1] !== '-') return depthLeft === 8 && s[i + 1] === '>' ? -1 : /^\s*(?:$|[,(){}>\]]|::|(?:const\b\s*)?[*&]+\s*(?:const\s*)?(?:$|[,)>]))/.test(s.slice(i + 1)) ? i : -1
+    else if (c === ';' || c === '?' || c === '=' || (c === '|' && s[i + 1] === '|') || (c === '&' && s[i + 1] === '&' && !/^&&\s*[,>]/.test(s.slice(i, i + 8)))) return -1
+  }
+  return -1
+}
+
 /** Splits an argument list on top-level commas. `s` is masked code without the outer parens. */
 export function splitArgs(s: string): { text: string; start: number }[] {
   const out: { text: string; start: number }[] = []
@@ -95,6 +116,7 @@ export function splitArgs(s: string): { text: string; start: number }[] {
     const c = s[i]
     if (c === '(' || c === '[' || c === '{') depth++
     else if (c === ')' || c === ']' || c === '}') depth--
+    else if (c === '<' && depth === 0) { const e = templateEnd(s, i); if (e > 0) i = e }
     else if (c === ',' && depth === 0) { out.push({ text: s.slice(start, i), start }); start = i + 1 }
   }
   if (s.trim() || out.length) out.push({ text: s.slice(start), start })
