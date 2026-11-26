@@ -1,6 +1,7 @@
 // CUDA -> HIP source translation for one file.
+import type { Target } from './gfx.ts'
 import { mask, lineOf, matchBracket, splitArgs, type Masked } from './lex.ts'
-import { lookup, lookupHeader, type Lib, type Mapping } from './mapping.ts'
+import { fp8Name, lookup, lookupHeader, type Lib, type Mapping } from './mapping.ts'
 
 export interface Use {
   cuda: string
@@ -26,6 +27,8 @@ export interface TranslateOptions {
   ggl?: boolean
   /** Names defined by the project itself (macros, functions) that must never be renamed */
   defined?: Set<string>
+  /** FP8 format of the target; hipify's FNUZ names are used when it is not OCP */
+  fp8?: Target['fp8']
 }
 
 interface Edit { start: number; end: number; text: string; /** Deletes a whole argument */ drop?: true }
@@ -117,7 +120,7 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
       continue
     }
     if (defined.has(id)) continue
-    const mp = lookup(id)
+    const mp = fp8Name(lookup(id), opts.fp8)
     if (!mp) {
       if (cudaLike(id, isCall(at + id.length))) note({ cuda: id, hip: null, lib: 'runtime', status: 'unmapped', via: 'none', note: 'Looks like a CUDA API name but is in neither the hipify table nor the curated one.', kind: 'api' }, lineOf(m, at))
       continue
