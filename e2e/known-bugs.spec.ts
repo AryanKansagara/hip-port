@@ -9,7 +9,7 @@ const rocm = async (page: import('@playwright/test').Page, name: string, text: s
   return out.split('\n').slice(2).filter(Boolean)
 }
 
-test.fail('#2 a comma inside template arguments does not split a call argument', async ({ page }) => {
+test('#2 a comma inside template arguments does not split a call argument', async ({ page }) => {
   await project(page, [{ name: 'k.cu', data: `${RT}cudaFuncSetAttribute(kern<float, 4>, cudaFuncAttributeMaxDynamicSharedMemorySize, n);\nk<<<div_up<int, 8>(n), 256>>>(x);\n` }])
   await useGgl(page)
   await tab(page, 'Files & diff')
@@ -19,7 +19,7 @@ test.fail('#2 a comma inside template arguments does not split a call argument',
   ])
 })
 
-test.fail('#3 FP8 types follow the target: OCP on gfx950 and gfx1201, FNUZ on gfx942', async ({ page }) => {
+test('#3 FP8 types follow the target: OCP on gfx950 and gfx1201, FNUZ on gfx942', async ({ page }) => {
   await project(page, [{ name: 'k.cu', data: `${RT}__nv_fp8_e4m3 a; __nv_fp8x2_e5m2 b;\n` }])
   await tab(page, 'Files & diff')
   const line = async () => (await translated(page)).split('\n')[1]
@@ -30,7 +30,7 @@ test.fail('#3 FP8 types follow the target: OCP on gfx950 and gfx1201, FNUZ on gf
   }
 })
 
-test.fail('#4 the usual spellings of a 32-lane assumption are found', async ({ page }) => {
+test('#4 the usual spellings of a 32-lane assumption are found', async ({ page }) => {
   const lines = ['const int WARP_SIZE = 32;', 'static constexpr uint32_t kWarpSize = 32u;', '#define WARPSIZE (32)', 'enum { WARP_LANES = 32 };', 'int a = threadIdx.x & 0x1f;', 'int b = tid % 32u;', 'for (unsigned int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(m, v, o, 32);']
   await project(page, [{ name: 'k.cu', data: lines.join('\n') + '\n' }])
   await tab(page, 'Files & diff')
