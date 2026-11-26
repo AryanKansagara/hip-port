@@ -84,7 +84,7 @@ export function scan(files: SourceFile[], depsFile: SourceFile | null, opts: Sca
 
   const results: FileResult[] = files.filter(f => isSource(f.path)).map(f => {
     const m = mask(f.text)
-    const tr = translate(f.text, { ggl: opts.ggl, defined })
+    const tr = translate(f.text, { ggl: opts.ggl, defined, fp8: t.fp8 })
     const hazards = detect(f.text, m, t)
     const plain = !tr.uses.length && !hazards.length && !/__global__|__device__|__shared__/.test(m.code)
     return {
