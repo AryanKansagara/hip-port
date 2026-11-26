@@ -9,7 +9,7 @@ const rocm = async (page: import('@playwright/test').Page, name: string, text: s
   return out.split('\n').slice(2).filter(Boolean)
 }
 
-test.fail('#2 a comma inside template arguments does not split a call argument', async ({ page }) => {
+test('#2 a comma inside template arguments does not split a call argument', async ({ page }) => {
   await project(page, [{ name: 'k.cu', data: `${RT}cudaFuncSetAttribute(kern<float, 4>, cudaFuncAttributeMaxDynamicSharedMemorySize, n);\nk<<<div_up<int, 8>(n), 256>>>(x);\n` }])
   await useGgl(page)
   await tab(page, 'Files & diff')
@@ -19,7 +19,7 @@ test.fail('#2 a comma inside template arguments does not split a call argument',
   ])
 })
 
-test.fail('#3 FP8 types follow the target: OCP on gfx950 and gfx1201, FNUZ on gfx942', async ({ page }) => {
+test('#3 FP8 types follow the target: OCP on gfx950 and gfx1201, FNUZ on gfx942', async ({ page }) => {
   await project(page, [{ name: 'k.cu', data: `${RT}__nv_fp8_e4m3 a; __nv_fp8x2_e5m2 b;\n` }])
   await tab(page, 'Files & diff')
   const line = async () => (await translated(page)).split('\n')[1]
@@ -30,14 +30,14 @@ test.fail('#3 FP8 types follow the target: OCP on gfx950 and gfx1201, FNUZ on gf
   }
 })
 
-test.fail('#4 the usual spellings of a 32-lane assumption are found', async ({ page }) => {
+test('#4 the usual spellings of a 32-lane assumption are found', async ({ page }) => {
   const lines = ['const int WARP_SIZE = 32;', 'static constexpr uint32_t kWarpSize = 32u;', '#define WARPSIZE (32)', 'enum { WARP_LANES = 32 };', 'int a = threadIdx.x & 0x1f;', 'int b = tid % 32u;', 'for (unsigned int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(m, v, o, 32);']
   await project(page, [{ name: 'k.cu', data: lines.join('\n') + '\n' }])
   await tab(page, 'Files & diff')
   await expect(page.locator('.diff .mark.critical')).toHaveCount(lines.length, { timeout: 5000 })
 })
 
-test.fail('#5 requirements-rocm.txt keeps markers, git URLs, hashes and other indexes, and stays installable', async ({ page }) => {
+test('#5 requirements-rocm.txt keeps markers, git URLs, hashes and other indexes, and stays installable', async ({ page }) => {
   expect(await rocm(page, 'requirements.txt', `--extra-index-url https://pypi.example.test/simple
 peft @ git+https://github.com/huggingface/peft.git@v0.13.0
 git+https://github.com/x/y.git@v1#egg=mylib
@@ -58,7 +58,7 @@ jax[cuda12]==0.4.30
   ])
 })
 
-test.fail('#5 a conda environment becomes lines pip accepts', async ({ page }) => {
+test('#5 a conda environment becomes lines pip accepts', async ({ page }) => {
   expect(await rocm(page, 'environment.yml', `dependencies:
   - python=3.11
   - pytorch=2.3.0=py3.11_cuda12.1_cudnn8.9.2_0
@@ -74,14 +74,15 @@ test.fail('#5 a conda environment becomes lines pip accepts', async ({ page }) =
   ])
 })
 
-test.fail('#6 a dependency file that cannot be read does not pass its checks', async ({ page }) => {
+test('#6 a dependency file that cannot be read does not pass its checks', async ({ page }) => {
   await project(page, [{ name: 'requirements.txt', data: 'Please sign in to continue\n' }])
   await expect(check(page, 'Remove CUDA-only packages')).not.toHaveClass('pass', { timeout: 5000 })
+  await expect(kpi(page, 'Readiness').locator('b')).toHaveText('95/100') // one high item: 100*e^-0.05
   await tab(page, 'Python stack')
   await expect(page.getByText('Line 1: Could not read “Please sign in to continue”')).toBeVisible({ timeout: 5000 })
 })
 
-test.fail('#6 conda flow lists, quoted entries and nested pip problems are read or reported', async ({ page }) => {
+test('#6 conda flow lists, quoted entries and nested pip problems are read or reported', async ({ page }) => {
   await project(page, [{ name: 'environment.yml', data: 'channels: [nvidia]\ndependencies:\n  - "pytorch-cuda=12.1"\n  - pip:\n    - "torch==2.3.1+cu121"\n    - -r base.txt\n' }])
   await expect(check(page, 'Remove CUDA-only packages')).toHaveClass('todo', { timeout: 5000 })
   await tab(page, 'Python stack')

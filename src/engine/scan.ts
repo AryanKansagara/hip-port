@@ -84,7 +84,7 @@ export function scan(files: SourceFile[], depsFile: SourceFile | null, opts: Sca
 
   const results: FileResult[] = files.filter(f => isSource(f.path)).map(f => {
     const m = mask(f.text)
-    const tr = translate(f.text, { ggl: opts.ggl, defined })
+    const tr = translate(f.text, { ggl: opts.ggl, defined, fp8: t.fp8 })
     const hazards = detect(f.text, m, t)
     const plain = !tr.uses.length && !hazards.length && !/__global__|__device__|__shared__/.test(m.code)
     return {
@@ -150,11 +150,18 @@ export function workItems(files: FileResult[], deps: DepsResult | null, depsPath
     for (const x of deps.cudaIndexes) out.push({ key: `dependency|${depsPath}|index|${x.url}`, severity: 'high', category: 'dependency', file: depsPath, line: x.line, title: 'Package index points at CUDA wheels', detail: x.url, fix: 'Replace with the PyTorch ROCm index.' })
     for (const c of deps.cudaChannels) out.push({ key: `dependency|${depsPath}|channel|${c}`, severity: 'medium', category: 'dependency', file: depsPath, line: 0, title: `Conda channel “${c}” only serves CUDA packages`, detail: '', fix: 'Remove the channel.' })
   }
+  if (deps) {
+    const unread = unreadDeps(deps)
+    if (unread) out.push({ key: `dependency|${depsPath}|unread`, severity: deps.deps.length ? 'medium' : 'high', category: 'dependency', file: depsPath, line: deps.errors[0]?.line ?? 0, title: unread, detail: deps.errors[0]?.message ?? '', fix: 'Check that this is the dependency file your environment is built from, or fix the lines listed on the Python tab.' })
+  }
   // One row per key: a package listed once per platform marker is still one thing to fix.
   const keys = new Set<string>()
   const unique = out.filter(i => !keys.has(i.key) && keys.add(i.key))
   return unique.sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity) || a.file.localeCompare(b.file) || a.line - b.line)
 }
+
+/** What keeps the dependency checks from being conclusive, or null. */
+export const unreadDeps = (d: DepsResult) => d.errors.length ? `${d.errors.length} line${d.errors.length > 1 ? 's' : ''} of the dependency file not read` : d.deps.length ? null : 'No packages found in the dependency file'
 
 export const STATUS_LABEL: Record<string, string> = { ok: 'works on ROCm', rocm: 'install the ROCm build', fork: 'needs the ROCm fork or a source build', partial: 'partly supported', 'cuda-only': 'CUDA only', unknown: 'not in table' }
 
@@ -175,18 +182,19 @@ function checklist(files: FileResult[], deps: DepsResult | null, t: Target): Che
   const uses = (name: string) => files.some(f => f.uses.some(u => u.cuda === name))
   const dep = (n: string) => deps?.deps.find(d => d.name.toLowerCase().replace(/_/g, '-') === n)
 
+  const unread = deps ? unreadDeps(deps) : null
   const torch = dep('torch') ?? dep('pytorch')
   if (!deps) out.push({ id: 'torch', state: 'info', title: 'Add requirements.txt or environment.yml', detail: 'Upload your Python dependency file to check torch, attention libraries and quantization packages.' })
   else if (!torch) out.push({ id: 'torch', state: 'info', title: 'torch not listed', detail: 'No torch dependency found. If it comes from a base image, use rocm/pytorch.' })
   else {
     const bad = torch.cudaLocal || deps.cudaIndexes.length || deps.cudaChannels.length || torch.source === 'conda'
-    out.push({ id: 'torch', state: bad ? 'todo' : 'pass', title: 'Install torch from the ROCm wheel index', detail: bad ? `Line ${torch.line} pins a CUDA build${torch.cudaLocal ? ` (+${torch.cudaLocal})` : ''}${deps.cudaIndexes.length ? ' and the file points at a CUDA index' : ''}. Use the ROCm index and the matching torchvision/torchaudio.` : 'torch has no CUDA-specific pin.', command: 'pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm7.0' })
+    out.push({ id: 'torch', state: bad ? 'todo' : unread ? 'info' : 'pass', title: 'Install torch from the ROCm wheel index', detail: bad ? `Line ${torch.line} pins a CUDA build${torch.cudaLocal ? ` (+${torch.cudaLocal})` : ''}${deps.cudaIndexes.length ? ' and the file points at a CUDA index' : ''}. Use the ROCm index and the matching torchvision/torchaudio.` : `torch has no CUDA-specific pin.${unread ? ` ${unread}.` : ''}`, command: 'pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm7.0' })
   }
   if (deps) {
     const cudaOnly = deps.deps.filter(d => d.status === 'cuda-only')
-    out.push({ id: 'cuda-only', state: cudaOnly.length ? 'todo' : 'pass', title: 'Remove CUDA-only packages', detail: cudaOnly.length ? cudaOnly.map(d => d.name).join(', ') : 'None found.' })
+    out.push({ id: 'cuda-only', state: cudaOnly.length ? 'todo' : unread ? 'info' : 'pass', title: 'Remove CUDA-only packages', detail: cudaOnly.length ? cudaOnly.map(d => d.name).join(', ') : unread ? `None in what was read. ${unread}.` : 'None found.' })
     const forks = deps.deps.filter(d => d.status === 'fork' || d.status === 'partial')
-    out.push({ id: 'forks', state: forks.length ? 'todo' : 'pass', title: 'Switch to ROCm forks and source builds', detail: forks.length ? forks.map(d => d.name).join(', ') : 'None needed.' })
+    out.push({ id: 'forks', state: forks.length ? 'todo' : unread ? 'info' : 'pass', title: 'Switch to ROCm forks and source builds', detail: forks.length ? forks.map(d => d.name).join(', ') : unread ? `None in what was read. ${unread}.` : 'None needed.' })
   }
   out.push({ id: 'arch', state: 'info', title: `Build extensions for ${t.id}`, detail: `Set the target before building any C++/HIP extension so you do not compile for every architecture.`, command: `export PYTORCH_ROCM_ARCH=${t.id}` })
   const waveRules = ['warp-size-32', 'shfl-reduction-16', 'mask-32bit', 'ballot-32bit', 'lane-bit-32', 'warp-synchronous']
