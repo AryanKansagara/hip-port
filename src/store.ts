@@ -112,6 +112,31 @@ export async function saveProject(p: Project, opts: { touch?: boolean; silent?: 
   return next
 }
 
+// Changes run one after another, each on what the one before it stored, so a change made from an
+// older view (an undo in a toast, two quick clicks) never carries stale fields back.
+let queue: Promise<unknown> = Promise.resolve()
+function inTurn<T>(f: () => Promise<T>): Promise<T> {
+  const run = queue.then(f)
+  queue = run.catch(() => {})
+  return run
+}
+
+/** Changes a project's current record. Does nothing when the project has been deleted. */
+export const changeProject = (id: string, change: (p: Project) => Partial<Project>) => inTurn(async () => {
+  const p = getProject(id)
+  if (p) await saveProject({ ...p, ...change(p) })
+})
+
+/** Changes a project's current sources and its record together; `change` returns null to leave both alone. */
+export const changeSources = (id: string, change: (ds: Dataset, p: Project) => { ds: Dataset; patch: Partial<Project> } | null) => inTurn(async () => {
+  const p = getProject(id)
+  const c = p && change(await getData(id) ?? { files: [], deps: null }, p)
+  if (!c) return
+  await putData(id, c.ds)
+  // Read again: the sync may have written the record meanwhile.
+  await saveProject({ ...(getProject(id) ?? p), ...c.patch })
+})
+
 /** Deletes locally; returns an undo function that restores the project and its data. */
 export async function deleteProject(id: string): Promise<() => Promise<void>> {
   const p = getProject(id)

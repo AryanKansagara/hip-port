@@ -3,7 +3,7 @@ import { TARGETS } from './engine/gfx.ts'
 import { coveragePct, readiness, snapshotOf, worklistCsv, type ScanResult } from './engine/scan.ts'
 import { rocmRequirements } from './engine/pydeps.ts'
 import { writeZip } from './engine/zip.ts'
-import { useProject, useScan } from './projectData.ts'
+import { useProject, useScan, type Update } from './projectData.ts'
 import { uuid, type Dataset, type Project } from './store.ts'
 import { download, Empty, fmtPct, go, isTyping, Link, Modal, SyntheticBadge, toast } from './ui.tsx'
 
@@ -17,15 +17,15 @@ export interface TabProps {
   project: Project
   ds: Dataset
   r: ScanResult
-  update(p: Partial<Project>): void
+  update: Update
 }
 
 export const resolver = (p: Project) => (k: string) => !!p.status[k]
 
-export function saveScan(project: Project, r: ScanResult, update: (p: Partial<Project>) => void, label?: string) {
+export function saveScan(project: Project, r: ScanResult, update: Update, label?: string) {
   const snap = snapshotOf(r, uuid(), label ?? `Scan ${project.snapshots.length + 1}`, Date.now(), resolver(project))
-  update({ snapshots: [...project.snapshots, snap] })
-  toast(`Saved “${snap.label}”: readiness ${snap.score}`, { tone: 'ok', undo: () => update({ snapshots: project.snapshots }) })
+  update(p => ({ snapshots: [...p.snapshots, snap] }))
+  toast(`Saved “${snap.label}”: readiness ${snap.score}`, { tone: 'ok', undo: () => update(p => ({ snapshots: p.snapshots.filter(s => s.id !== snap.id) })) })
 }
 
 export function downloadZip(project: Project, r: ScanResult) {
@@ -98,7 +98,7 @@ export default function ProjectView({ id, tab: rawTab }: { id: string; tab: stri
       </nav>
       <Suspense fallback={<div className="boot"><span className="spinner" /></div>}>
         {tab === 'sources' || empty
-          ? <Sources project={project} ds={ds} update={update} />
+          ? <Sources project={project} ds={ds} />
           : <Tabs tab={tab} project={project} ds={ds} r={r} update={update} />}
       </Suspense>
       <Modal open={help} onClose={() => setHelp(false)} title="Keyboard shortcuts">

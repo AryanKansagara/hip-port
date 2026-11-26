@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { SAMPLES } from './engine/sample.ts'
 import { isDepsFile, scan, snapshotOf, type ScanResult } from './engine/scan.ts'
-import { getData, getDefaults, getProjects, saveProject, useProjects, uuid, type Dataset, type Project } from './store.ts'
+import { changeProject, getData, getDefaults, getProjects, saveProject, useProjects, uuid, type Dataset, type Project } from './store.ts'
 
 export function sampleData(id: string): Dataset | null {
   const s = SAMPLES.find(x => x.id === id)
@@ -37,6 +37,9 @@ export async function createBlankProject(name: string): Promise<Project> {
   return saveProject({ id: uuid(), name, createdAt: now, updatedAt: now, target: d.target, ggl: d.ggl, status: {}, snapshots: [], imports: [] })
 }
 
+/** Changes the project as it is when the change runs. Pass a function when the new value depends on the old one. */
+export type Update = (change: Partial<Project> | ((p: Project) => Partial<Project>)) => void
+
 export function useProject(id: string) {
   const list = useProjects()
   const project = list?.find(p => p.id === id) ?? null
@@ -49,7 +52,7 @@ export function useProject(id: string) {
     void getData(project.id).then(d => { if (live) setDs(d ?? { files: [], deps: null }) })
     return () => { live = false }
   }, [project?.id, project?.sampleId, importsKey])
-  const update = (patch: Partial<Project>) => project && saveProject({ ...project, ...patch })
+  const update: Update = change => { void changeProject(id, typeof change === 'function' ? change : () => change) }
   return { loading: list === null || (project !== null && ds === null), project, ds, update }
 }
 

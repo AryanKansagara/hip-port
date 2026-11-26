@@ -116,7 +116,7 @@ test('#8 an unreadable entry the import would skip anyway does not block the res
   await expect(page.locator('.src-list li .mono')).toHaveText(['k.cu'], { timeout: 5000 })
 })
 
-test.fail('#9 undoing a saved scan does not reopen an item resolved since', async ({ page }) => {
+test('#9 undoing a saved scan does not reopen an item resolved since', async ({ page }) => {
   await project(page, [{ name: 'k.cu', data: 'int lane = threadIdx.x % 32;\n' }])
   await tab(page, 'Worklist')
   await page.getByRole('button', { name: 'Save scan' }).first().click()
@@ -129,6 +129,55 @@ test.fail('#9 undoing a saved scan does not reopen an item resolved since', asyn
   await expect(page.locator('table.data tbody tr')).toHaveCount(1)
   await tab(page, 'Worklist')
   await expect(page.getByText('1 of 1 resolved')).toBeVisible({ timeout: 5000 })
+})
+
+test('#9 two status changes made at once both stick', async ({ page }) => {
+  await project(page, [{ name: 'k.cu', data: 'int lane = threadIdx.x % 32;\nint row = threadIdx.y % 32;\nconst int WARP_SIZE = 32;\n' }])
+  await tab(page, 'Worklist')
+  const n = await page.locator('table.worklist tbody tr').count()
+  expect(n).toBeGreaterThan(1)
+  await page.evaluate(() => {
+    const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!
+    for (const s of document.querySelectorAll('table.worklist select')) { set.call(s, 'done'); s.dispatchEvent(new Event('change', { bubbles: true })) }
+  })
+  await expect(page.getByText(`${n} of ${n} resolved`)).toBeVisible({ timeout: 5000 })
+})
+
+test('#9 undoing a deleted scan keeps what was done since', async ({ page }) => {
+  await project(page, [{ name: 'k.cu', data: 'int lane = threadIdx.x % 32;\n' }])
+  await page.getByRole('button', { name: 'Save scan' }).first().click()
+  await tab(page, 'History')
+  const names = page.locator('table.data tbody tr td:first-child')
+  await expect(names).toHaveText(['Scan 2', 'Import: k.cu'])
+  await page.getByRole('button', { name: 'Delete Import: k.cu' }).click()
+  await expect(names).toHaveText(['Scan 2'])
+  await page.getByRole('button', { name: 'Save current scan' }).click()
+  await expect(names).toHaveCount(2)
+  await page.locator('.toast', { hasText: 'Deleted' }).getByRole('button', { name: 'Undo' }).click()
+  await expect(names).toHaveText(['Scan 2', 'Scan 2', 'Import: k.cu'], { timeout: 5000 })
+})
+
+test('#9 undoing a removed source keeps files imported since', async ({ page }) => {
+  await newProject(page)
+  await importFiles(page, [{ name: 'a.cu', data: 'cudaFree(a);\n' }, { name: 'b.cu', data: 'cudaFree(b);\n' }], 2)
+  await page.getByRole('button', { name: 'Remove a.cu' }).click()
+  await expect(page.locator('.src-list li .mono')).toHaveText(['b.cu'])
+  await importFiles(page, [{ name: 'c.cu', data: 'cudaFree(c);\n' }], 1)
+  await page.locator('.toast', { hasText: 'Removed a.cu' }).getByRole('button', { name: 'Undo' }).click()
+  await expect(page.locator('.src-list li .mono')).toHaveText(['a.cu', 'b.cu', 'c.cu'], { timeout: 5000 })
+  await expect(page.locator('.log li')).toHaveCount(4)
+})
+
+test('#9 undoing a removed source does not replace a newer copy of it', async ({ page }) => {
+  await newProject(page)
+  await importFiles(page, [{ name: 'a.cu', data: 'old();\n' }, { name: 'b.cu', data: 'cudaFree(b);\n' }], 2)
+  await page.getByRole('button', { name: 'Remove a.cu' }).click()
+  await expect(page.locator('.src-list li')).toHaveCount(1)
+  await importFiles(page, [{ name: 'a.cu', data: 'newer();\ncudaFree(a);\n' }], 1)
+  await page.locator('.toast', { hasText: 'Removed a.cu' }).getByRole('button', { name: 'Undo' }).click()
+  await expect(page.locator('.toast', { hasText: 'Removed a.cu' })).toHaveCount(0)
+  await tab(page, 'Files & diff')
+  expect(await translated(page)).toContain('newer();')
 })
 
 test.fail('#10 pasting a file with a folder keeps the folder', async ({ page }) => {

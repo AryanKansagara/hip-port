@@ -3,17 +3,18 @@ import { isDepsFile, isSource, scan, snapshotOf, type SourceFile } from './engin
 import { readZip } from './engine/zip.ts'
 import { resolver } from './Project.tsx'
 import { sampleData } from './projectData.ts'
-import { putData, saveProject, uuid, type Dataset, type ImportMeta, type Project } from './store.ts'
+import { changeSources, putData, saveProject, uuid, type Dataset, type ImportMeta, type Project } from './store.ts'
 import { go, Link, toast } from './ui.tsx'
 
 const MAX_FILE = 1_000_000
 const MAX_TOTAL = 25_000_000
 const SKIP_DIRS = /(^|\/)(\.git|node_modules|build|dist|__pycache__|\.venv|venv)\//
 
+export interface Incoming { path: string; data: Uint8Array; size?: number }
 export interface Row { path: string; status: 'added' | 'replaced' | 'skipped'; reason?: string; lines?: number }
 
 /** Classifies incoming files and merges them into the dataset. Pure apart from TextDecoder. */
-export function ingest(ds: Dataset, incoming: { path: string; data: Uint8Array; size?: number }[]): { ds: Dataset; rows: Row[] } {
+export function ingest(ds: Dataset, incoming: Incoming[]): { ds: Dataset; rows: Row[] } {
   const files = [...ds.files]
   let deps = ds.deps
   const rows: Row[] = []
@@ -48,7 +49,7 @@ export function ingest(ds: Dataset, incoming: { path: string; data: Uint8Array; 
   return { ds: { files, deps }, rows }
 }
 
-export default function Sources({ project, ds, update }: { project: Project; ds: Dataset; update(p: Partial<Project>): void }) {
+export default function Sources({ project, ds }: { project: Project; ds: Dataset }) {
   const [rows, setRows] = useState<Row[] | null>(null)
   const [busy, setBusy] = useState(false)
   const [drag, setDrag] = useState(false)
@@ -59,16 +60,22 @@ export default function Sources({ project, ds, update }: { project: Project; ds:
   const dirRef = useRef<HTMLInputElement>(null)
   const empty = !ds.files.length && !ds.deps
 
-  const commit = async (next: Dataset, r: Row[], meta: Omit<ImportMeta, 'id' | 'at' | 'files' | 'skipped'>) => {
-    const added = r.filter(x => x.status !== 'skipped').length
-    setRows(r)
+  const commit = async (incoming: Incoming[], meta: Omit<ImportMeta, 'id' | 'at' | 'files' | 'skipped'>) => {
+    let rows: Row[] = [], added = 0, score = 0
+    await changeSources(project.id, (cur, p) => {
+      const { ds: next, rows: r } = ingest(cur, incoming)
+      rows = r
+      added = r.filter(x => x.status !== 'skipped').length
+      if (!added) return null
+      const res = scan(next.files, next.deps, { target: p.target, ggl: p.ggl })
+      const snap = snapshotOf(res, uuid(), `Import: ${meta.fileName}`.slice(0, 60), Date.now(), resolver(p))
+      score = snap.score
+      return { ds: next, patch: { dataMissing: false, snapshots: [...p.snapshots, snap], imports: [...p.imports, { ...meta, id: uuid(), at: Date.now(), files: added, skipped: r.length - added }] } }
+    })
+    setRows(rows)
     if (!added) { setError('Nothing was imported. See the reasons below.'); return }
     setError(null)
-    await putData(project.id, next)
-    const res = scan(next.files, next.deps, { target: project.target, ggl: project.ggl })
-    const snap = snapshotOf(res, uuid(), `Import: ${meta.fileName}`.slice(0, 60), Date.now(), resolver(project))
-    await saveProject({ ...project, dataMissing: false, snapshots: [...project.snapshots, snap], imports: [...project.imports, { ...meta, id: uuid(), at: Date.now(), files: added, skipped: r.length - added }] })
-    toast(`Imported ${added} file${added > 1 ? 's' : ''}. Readiness ${snap.score}.`, { tone: 'ok', action: { label: 'See overview', run: () => go(`/app/p/${project.id}`) } })
+    toast(`Imported ${added} file${added > 1 ? 's' : ''}. Readiness ${score}.`, { tone: 'ok', action: { label: 'See overview', run: () => go(`/app/p/${project.id}`) } })
   }
 
   const handleFiles = async (list: FileList | File[]) => {
@@ -77,7 +84,7 @@ export default function Sources({ project, ds, update }: { project: Project; ds:
     setBusy(true); setError(null); setRows(null)
     try {
       // Entries an import skips anyway are listed without being decompressed; `size` is what the zip declares.
-      const incoming: { path: string; data: Uint8Array; size?: number }[] = []
+      const incoming: Incoming[] = []
       const zips: string[] = []
       for (const f of all) {
         const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name
@@ -91,8 +98,7 @@ export default function Sources({ project, ds, update }: { project: Project; ds:
           incoming.push(...read, ...skip)
         } else incoming.push({ path: rel, data })
       }
-      const { ds: next, rows: r } = ingest(ds, incoming)
-      await commit(next, r, { kind: zips.length ? 'zip' : 'files', fileName: zips[0] ?? (all.length === 1 ? all[0].name : `${all.length} files`) })
+      await commit(incoming, { kind: zips.length ? 'zip' : 'files', fileName: zips[0] ?? (all.length === 1 ? all[0].name : `${all.length} files`) })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally { setBusy(false) }
@@ -101,19 +107,29 @@ export default function Sources({ project, ds, update }: { project: Project; ds:
   const addPaste = async () => {
     const name = pasteName.trim() || 'kernel.cu'
     if (!paste.trim()) { setError('Paste some code first.'); return }
-    const { ds: next, rows: r } = ingest(ds, [{ path: name, data: new TextEncoder().encode(paste) }])
-    await commit(next, r, { kind: isDepsFile(name) ? 'deps' : 'paste', fileName: name })
+    await commit([{ path: name, data: new TextEncoder().encode(paste) }], { kind: isDepsFile(name) ? 'deps' : 'paste', fileName: name })
     setPaste('')
   }
 
   const remove = async (path: string) => {
-    const prev = ds
-    const next: Dataset = path === ds.deps?.path ? { ...ds, deps: null } : { ...ds, files: ds.files.filter(f => f.path !== path) }
+    const dep = path === ds.deps?.path
+    const file = dep ? ds.deps : ds.files.find(f => f.path === path)
+    if (!file) return
     // A log entry also tells the project view to reload its sources.
     const log = (fileName: string) => ({ id: uuid(), kind: 'remove' as const, fileName, files: 1, skipped: 0, at: Date.now() })
-    await putData(project.id, next)
-    update({ imports: [...project.imports, log(path)] })
-    toast(`Removed ${path}`, { undo: async () => { await putData(project.id, prev); update({ imports: [...project.imports, log(`${path} (restored)`)] }) } })
+    await changeSources(project.id, (cur, p) => ({
+      ds: dep ? { ...cur, deps: cur.deps?.path === path ? null : cur.deps } : { ...cur, files: cur.files.filter(f => f.path !== path) },
+      patch: { imports: [...p.imports, log(path)] },
+    }))
+    // Only this file comes back, and only if nothing has been imported in its place since.
+    const restore = () => changeSources(project.id, (cur, p) => {
+      if (dep ? cur.deps : cur.files.some(f => f.path === path)) return null
+      return {
+        ds: dep ? { ...cur, deps: file } : { ...cur, files: [...cur.files, file].sort((a, b) => a.path.localeCompare(b.path)) },
+        patch: { imports: [...p.imports, log(`${path} (restored)`)] },
+      }
+    })
+    toast(`Removed ${path}`, { undo: () => void restore() })
   }
 
   const makeCopy = async () => {
