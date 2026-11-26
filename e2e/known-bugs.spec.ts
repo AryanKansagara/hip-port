@@ -30,7 +30,7 @@ test('#3 FP8 types follow the target: OCP on gfx950 and gfx1201, FNUZ on gfx942'
   }
 })
 
-test.fail('#4 the usual spellings of a 32-lane assumption are found', async ({ page }) => {
+test('#4 the usual spellings of a 32-lane assumption are found', async ({ page }) => {
   const lines = ['const int WARP_SIZE = 32;', 'static constexpr uint32_t kWarpSize = 32u;', '#define WARPSIZE (32)', 'enum { WARP_LANES = 32 };', 'int a = threadIdx.x & 0x1f;', 'int b = tid % 32u;', 'for (unsigned int o = 16; o > 0; o >>= 1) v += __shfl_down_sync(m, v, o, 32);']
   await project(page, [{ name: 'k.cu', data: lines.join('\n') + '\n' }])
   await tab(page, 'Files & diff')
