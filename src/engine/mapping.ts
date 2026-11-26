@@ -299,6 +299,16 @@ export function lookup(id: string): Mapping | null {
   return null
 }
 
+/**
+ * hipify always writes the FNUZ FP8 names. HIP compiles those out of device code on OCP targets
+ * (amd_hip_fp8.h, HIP_FP8_TYPE_OCP / HIP_FP8_TYPE_FNUZ), where the plain names are the ones that exist.
+ */
+export function fp8Name(m: Mapping | null, fp8: 'none' | 'fnuz' | 'ocp' | undefined): Mapping | null {
+  if (!m?.hip || !/^(?:__hip_fp8\w*_e[45]m[32]_fnuz|__HIP_E[45]M[32]_FNUZ)$/.test(m.hip)) return m
+  if (fp8 === 'ocp') return { ...m, hip: m.hip.replace(/_fnuz$/i, ''), status: 'ok', note: 'OCP type: the same encoding as CUDA on this target. gfx942 (MI300) needs the _fnuz type instead.' }
+  return { ...m, status: 'partial', note: m.note ?? 'hipify maps to the FNUZ type (gfx942, MI300): different bias and NaN encoding from CUDA. On gfx950 and RDNA4 use the OCP type.' }
+}
+
 // hipify still emits the flat pre-ROCm 6 header names for these; the packages install them here.
 const ROCM_PATH: Record<string, string> = { 'hipblas.h': 'hipblas/hipblas.h', 'hipblaslt.h': 'hipblaslt/hipblaslt.h', 'hipsolver.h': 'hipsolver/hipsolver.h', 'hipsparse.h': 'hipsparse/hipsparse.h' }
 

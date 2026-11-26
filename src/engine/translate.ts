@@ -1,6 +1,7 @@
 // CUDA -> HIP source translation for one file.
+import type { Target } from './gfx.ts'
 import { mask, lineOf, matchBracket, splitArgs, type Masked } from './lex.ts'
-import { lookup, lookupHeader, type Lib, type Mapping } from './mapping.ts'
+import { fp8Name, lookup, lookupHeader, type Lib, type Mapping } from './mapping.ts'
 
 export interface Use {
   cuda: string
@@ -26,9 +27,11 @@ export interface TranslateOptions {
   ggl?: boolean
   /** Names defined by the project itself (macros, functions) that must never be renamed */
   defined?: Set<string>
+  /** FP8 format of the target; hipify's FNUZ names are used when it is not OCP */
+  fp8?: Target['fp8']
 }
 
-interface Edit { start: number; end: number; text: string }
+interface Edit { start: number; end: number; text: string; /** Deletes a whole argument */ drop?: true }
 
 // A name with no mapping is reported as unmapped only when it is shaped like an API use: a
 // camel-case call or _t type with a CUDA library prefix, or an upper-case constant that is not
@@ -117,7 +120,7 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
       continue
     }
     if (defined.has(id)) continue
-    const mp = lookup(id)
+    const mp = fp8Name(lookup(id), opts.fp8)
     if (!mp) {
       if (cudaLike(id, isCall(at + id.length))) note({ cuda: id, hip: null, lib: 'runtime', status: 'unmapped', via: 'none', note: 'Looks like a CUDA API name but is in neither the hipify table nor the curated one.', kind: 'api' }, lineOf(m, at))
       continue
@@ -128,6 +131,9 @@ export function translate(src: string, opts: TranslateOptions = {}): Translation
     const fix = mp.hip ? HOST_FIX[mp.hip] : undefined
     if (fix) hostFix(m.code, src, at + id.length, fix, edits)
   }
+  // Names inside an argument HIP does not take go with it.
+  const drops = edits.filter(e => e.drop)
+  for (let i = edits.length - 1; i >= 0; i--) if (!edits[i].drop && drops.some(d => edits[i].start >= d.start && edits[i].end <= d.end)) edits.splice(i, 1)
   // `using namespace cub;` has no :: after the name.
   for (const x of m.code.matchAll(/\busing\s+namespace\s+(cub)\s*;/g)) {
     const at = x.index! + x[0].lastIndexOf('cub')
@@ -178,10 +184,8 @@ function hostFix(code: string, src: string, nameEnd: number, [idx, action, wrapp
   const lead = a.text.length - a.text.trimStart().length
   const start = p + 1 + a.start + lead, end = p + 1 + a.start + a.text.trimEnd().length
   if (action === 'drop') {
-    // Take the preceding comma with it; renames inside the dropped argument go too.
-    const from = p + 1 + a.start - (idx > 0 ? 1 : 0)
-    for (let i = edits.length - 1; i >= 0; i--) if (edits[i].start >= from && edits[i].end <= end) edits.splice(i, 1)
-    edits.push({ start: from, end: p + 1 + a.start + a.text.length, text: '' })
+    // Take the preceding comma with it.
+    edits.push({ start: p + 1 + a.start - (idx > 0 ? 1 : 0), end: p + 1 + a.start + a.text.length, text: '', drop: true })
   } else if (!src.slice(start, end).startsWith(wrapper)) {
     edits.push({ start, end: start, text: wrapper + '(' }, { start: end, end, text: ')' })
   }

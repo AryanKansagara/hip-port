@@ -18,7 +18,7 @@ function HeroDemo() {
   const [beam, setBeam] = useState(() => reduced() ? 999 : 0)
   const [pick, setPick] = useState<number | null>(null)
   const t = target(tid)
-  const tr = useMemo(() => translate(src), [src])
+  const tr = useMemo(() => translate(src, { fp8: t.fp8 }), [src, t])
   const hazards = useMemo(() => detect(src, mask(src), t), [src, t])
   const hz = useMemo(() => byLine(hazards), [hazards])
   const L = useMemo(() => highlight(src), [src])
