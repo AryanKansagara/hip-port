@@ -74,14 +74,15 @@ test('#5 a conda environment becomes lines pip accepts', async ({ page }) => {
   ])
 })
 
-test.fail('#6 a dependency file that cannot be read does not pass its checks', async ({ page }) => {
+test('#6 a dependency file that cannot be read does not pass its checks', async ({ page }) => {
   await project(page, [{ name: 'requirements.txt', data: 'Please sign in to continue\n' }])
   await expect(check(page, 'Remove CUDA-only packages')).not.toHaveClass('pass', { timeout: 5000 })
+  await expect(kpi(page, 'Readiness').locator('b')).toHaveText('95/100') // one high item: 100*e^-0.05
   await tab(page, 'Python stack')
   await expect(page.getByText('Line 1: Could not read “Please sign in to continue”')).toBeVisible({ timeout: 5000 })
 })
 
-test.fail('#6 conda flow lists, quoted entries and nested pip problems are read or reported', async ({ page }) => {
+test('#6 conda flow lists, quoted entries and nested pip problems are read or reported', async ({ page }) => {
   await project(page, [{ name: 'environment.yml', data: 'channels: [nvidia]\ndependencies:\n  - "pytorch-cuda=12.1"\n  - pip:\n    - "torch==2.3.1+cu121"\n    - -r base.txt\n' }])
   await expect(check(page, 'Remove CUDA-only packages')).toHaveClass('todo', { timeout: 5000 })
   await tab(page, 'Python stack')
